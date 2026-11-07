@@ -59,16 +59,17 @@ export class Scanner {
       .sort((a, b) => (Date.parse(b.job.postedAt ?? "") || 0) - (Date.parse(a.job.postedAt ?? "") || 0))
       .slice(0, maxScored);
 
-    // 3. Scoring IA, 4 en parallèle. Une offre en erreur n'est pas marquée : elle sera retentée.
+    // 3. Scoring IA par lots de JobAI.BATCH offres (une requête par lot). Une offre non notée n'est pas marquée : elle sera retentée.
     const scored: { key: string; job: RawJob; verdict: Verdict }[] = [];
-    for (let i = 0; i < toScore.length; i += 4) {
-      await Promise.all(toScore.slice(i, i + 4).map(async (item) => {
-        try {
-          scored.push({ ...item, verdict: await JobAI.score(item.job, cvText, filters) });
-        } catch (e) {
-          report.errors.push(`scoring : ${String(e).slice(0, 150)}`);
-        }
-      }));
+    for (let i = 0; i < toScore.length; i += JobAI.BATCH) {
+      const batch = toScore.slice(i, i + JobAI.BATCH);
+      try {
+        const verdicts = await JobAI.scoreBatch(batch.map((b) => b.job), cvText, filters);
+        batch.forEach((item, k) => { if (verdicts[k]) scored.push({ ...item, verdict: verdicts[k]! }); });
+      } catch (e) {
+        report.errors.push(`scoring : ${String((e as Error)?.message ?? e).slice(0, 150)}`);
+        if (/quota/i.test(String(e))) break; // inutile d'insister : les offres restantes passeront au prochain scan
+      }
     }
     report.scored = scored.length;
     await SeenJobs.mark(this.userId, scored.map((s) => s.key));

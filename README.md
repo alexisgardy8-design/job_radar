@@ -48,7 +48,7 @@ app/
 - **Sites carrière** : API publiques Greenhouse, Lever, SmartRecruiters et Workday.
 - **Alertes e-mail** (facultatif) : un script Gmail transmet tes alertes LinkedIn, Indeed, etc.
 
-L'IA (lecture du CV, scoring) passe par Vercel AI Gateway, qui offre 5 $ de crédit chaque mois.
+L'IA (lecture du CV, scoring) passe par **Google Gemini**, gratuit sans carte bancaire (`GOOGLE_GENERATIVE_AI_API_KEY`, modèle `GEMINI_MODEL`, par défaut `gemini-2.5-flash`). Les offres sont notées par lots de 5 et les appels espacés (`AI_RPM`, 8 par minute par défaut) pour rester sous la limite de l'offre gratuite. Attention : avec l'offre gratuite, Google peut utiliser les données envoyées (dont les CV) pour améliorer ses produits. Sans clé Gemini, l'app utilise Vercel AI Gateway, qui exige une carte bancaire enregistrée.
 
 ## Sécurité
 
@@ -78,9 +78,10 @@ Copie `.env.example` en `.env` pour travailler en local (git ignore ce fichier).
      et celui de *Reset password* par
      `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=recovery`.
    - Le plan gratuit met en pause un projet inactif pendant 7 jours : le cron quotidien suffit à le garder actif.
-2. **Recherche web** : crée une clé gratuite sur https://app.tavily.com et mets-la dans `TAVILY_API_KEY`. Le quota de 1 000 recherches par mois est partagé entre tous les comptes (4 par scan par défaut).
-3. **E-mails** : sur ton compte Gmail, active la validation en 2 étapes, puis crée un mot de passe d'application sur https://myaccount.google.com/apppasswords. Mets ton adresse dans `SMTP_USER` et ce mot de passe dans `SMTP_PASS`.
-4. **Facultatif** : `FRANCE_TRAVAIL_CLIENT_ID` / `FRANCE_TRAVAIL_CLIENT_SECRET` et `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`.
+2. **IA gratuite** : crée une clé sur https://aistudio.google.com/apikey (connexion Google, sans carte) et mets-la dans `GOOGLE_GENERATIVE_AI_API_KEY`.
+3. **Recherche web** : crée une clé gratuite sur https://app.tavily.com et mets-la dans `TAVILY_API_KEY`. Le quota de 1 000 recherches par mois est partagé entre tous les comptes (4 par scan par défaut).
+4. **E-mails** : sur ton compte Gmail, active la validation en 2 étapes, puis crée un mot de passe d'application sur https://myaccount.google.com/apppasswords. Mets ton adresse dans `SMTP_USER` et ce mot de passe dans `SMTP_PASS`.
+5. **Facultatif** : `FRANCE_TRAVAIL_CLIENT_ID` / `FRANCE_TRAVAIL_CLIENT_SECRET` et `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`.
 
 Le scan automatique tourne chaque jour à 06:00 UTC (`vercel.json`). Il commence par un ménage (empreintes de plus de 60 jours, matchs de plus de 30 jours).
 

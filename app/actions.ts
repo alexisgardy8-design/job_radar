@@ -186,7 +186,12 @@ export async function uploadCv(fd: FormData) {
   if (file instanceof File && file.size > 0) {
     if (file.type !== "application/pdf") await go(SET, "Le CV doit être un PDF.");
     if (file.size > 5_000_000) await go(SET, "PDF trop lourd (5 Mo max).");
-    const text = await JobAI.readCv(new Uint8Array(await file.arrayBuffer()));
+    let text = "";
+    try {
+      text = await JobAI.readCv(new Uint8Array(await file.arrayBuffer()));
+    } catch (e) {
+      await go(SET, `Lecture du PDF impossible (${String((e as Error)?.message ?? e).slice(0, 200)}). Tu peux coller le texte de ton CV à la place.`);
+    }
     await repo.update({ cvText: text.slice(0, 40_000), cvName: file.name.slice(0, 200) });
   } else if (pasted) {
     await repo.update({ cvText: pasted.slice(0, 40_000), cvName: "texte collé" });
@@ -231,7 +236,12 @@ export async function scanNow() {
   const user = await requireUser();
   const l = Private.LIMITS.scan;
   if (!(await Private.claim(user.id, "scan"))) await go("/", `Scan manuel limité à ${l.max} par jour, un toutes les ${l.minutes} minutes.`);
-  const r = await (await Scanner.forUser(user.id)).run();
+  let r: Awaited<ReturnType<Scanner["run"]>>;
+  try {
+    r = await (await Scanner.forUser(user.id)).run();
+  } catch (e) {
+    return go("/", `Le scan a échoué : ${String((e as Error)?.message ?? e).slice(0, 250)}`);
+  }
   const msg = `Scan terminé : ${r.fetched} offres collectées, ${r.fresh} nouvelles, ${r.scored} notées, ${r.matched} au-dessus de ton seuil, ${r.sent} envoyées par e-mail.`;
   await go("/", r.errors.length ? `${msg} Problèmes : ${r.errors.slice(0, 3).join(" | ")}` : msg, r.errors.length && !r.scored ? "err" : "ok");
 }
