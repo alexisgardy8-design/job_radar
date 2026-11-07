@@ -9,8 +9,9 @@ export default async function ResetPage() {
   const user = await requireUser();
   return (
     <main className="login">
-      <div className="card">
-        <h1 style={{ fontSize: 20, marginTop: 0 }}>Nouveau mot de passe</h1>
+      <div className="login-brand"><span className="brand-dot" />Job Radar</div>
+      <div className="card login-card">
+        <h1>Nouveau mot de passe</h1>
         <p className="muted">{user.email}</p>
         <Flash flash={await readFlash()} />
         <form action={resetPassword} className="stack">

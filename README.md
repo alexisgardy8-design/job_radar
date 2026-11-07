@@ -48,7 +48,7 @@ app/
 - **Sites carrière** : API publiques Greenhouse, Lever, SmartRecruiters et Workday.
 - **Alertes e-mail** (facultatif) : un script Gmail transmet tes alertes LinkedIn, Indeed, etc.
 
-L'IA (lecture du CV, scoring) passe par **Google Gemini**, gratuit sans carte bancaire (`GOOGLE_GENERATIVE_AI_API_KEY`, modèle `GEMINI_MODEL`, par défaut `gemini-3.8-flash`). Les offres sont notées par lots de 5 et les appels espacés (`AI_RPM`, 8 par minute par défaut) pour rester sous la limite de l'offre gratuite. Attention : avec l'offre gratuite, Google peut utiliser les données envoyées (dont les CV) pour améliorer ses produits. Sans clé Gemini, l'app utilise Vercel AI Gateway, qui exige une carte bancaire enregistrée.
+L'IA (lecture du CV, scoring) passe par **Google Gemini**, gratuit sans carte bancaire (`GOOGLE_GENERATIVE_AI_API_KEY`, modèles `GEMINI_MODEL`, liste de secours essayée dans l'ordre, par défaut `gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-flash-latest`). Les offres sont notées par lots de 5 et les appels espacés (`AI_RPM`, 12 par minute par défaut) pour rester sous la limite de l'offre gratuite. Attention : avec l'offre gratuite, Google peut utiliser les données envoyées (dont les CV) pour améliorer ses produits. Sans clé Gemini, l'app utilise Vercel AI Gateway, qui exige une carte bancaire enregistrée.
 
 ## Sécurité
 

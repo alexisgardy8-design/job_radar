@@ -49,15 +49,19 @@ export class JobAI {
     return process.env.GOOGLE_GENERATIVE_AI_API_KEY ? "gemini" : "gateway";
   }
 
-  private static get model(): LanguageModel {
-    return JobAI.provider === "gemini"
-      ? google(process.env.GEMINI_MODEL || "gemini-3.8-flash")
-      : process.env.SCORING_MODEL || "anthropic/claude-haiku-5.5";
+  /**
+   * Modèles essayés dans l'ordre : si l'un est saturé (503), trop lent ou retiré, on passe au suivant.
+   * GEMINI_MODEL accepte une liste séparée par des virgules.
+   */
+  private static get models(): LanguageModel[] {
+    if (JobAI.provider === "gateway") return [process.env.SCORING_MODEL || "anthropic/claude-haiku-5.5"];
+    const names = (process.env.GEMINI_MODEL || "gemini-flash-lite-latest,gemini-3.5-flash-lite,gemini-flash-latest").split(",").map((m) => m.trim()).filter(Boolean);
+    return names.map((n) => google(n));
   }
 
   /** Espace les appels pour rester sous la limite de requêtes par minute (offre gratuite Gemini). */
   private static async throttle(): Promise<void> {
-    const rpm = Number(process.env.AI_RPM ?? (JobAI.provider === "gemini" ? 8 : 0));
+    const rpm = Number(process.env.AI_RPM ?? (JobAI.provider === "gemini" ? 12 : 0));
     if (!rpm) return;
     const now = Date.now();
     const slot = Math.max(now, JobAI.nextSlot);
@@ -65,17 +69,25 @@ export class JobAI {
     if (slot > now) await new Promise((r) => setTimeout(r, slot - now));
   }
 
-  private static async call<T>(args: Omit<Parameters<typeof generateText>[0], "model" | "maxRetries">): Promise<T> {
-    await JobAI.throttle();
-    try {
-      // maxRetries : réessaie avec attente croissante en cas de limite atteinte (429).
-      return (await generateText({ ...args, model: JobAI.model, maxRetries: 3 } as Parameters<typeof generateText>[0])) as T;
-    } catch (e) {
-      const msg = String((e as Error)?.message ?? e);
-      if (/quota|rate limit|429|RESOURCE_EXHAUSTED/i.test(msg)) throw new Error("quota IA gratuit atteint, réessaie plus tard");
-      if (/credit card|customer_verification/i.test(msg)) throw new Error("IA indisponible : ajoute GOOGLE_GENERATIVE_AI_API_KEY (gratuit) ou une carte sur Vercel AI Gateway");
-      throw e;
+  private static async call<T>(args: Omit<Parameters<typeof generateText>[0], "model" | "maxRetries" | "abortSignal">): Promise<T> {
+    const timeoutMs = Number(process.env.AI_TIMEOUT_MS ?? 45_000);
+    let last: unknown = null;
+    for (const model of JobAI.models) {
+      await JobAI.throttle();
+      try {
+        return (await generateText({ ...args, model, maxRetries: 1, abortSignal: AbortSignal.timeout(timeoutMs) } as Parameters<typeof generateText>[0])) as T;
+      } catch (e) {
+        last = e;
+        const msg = String((e as Error)?.message ?? e);
+        if (/credit card|customer_verification/i.test(msg)) throw new Error("IA indisponible : ajoute GOOGLE_GENERATIVE_AI_API_KEY (gratuit) ou une carte sur Vercel AI Gateway");
+        // Saturé, lent, retiré ou quota du modèle épuisé : on tente le modèle suivant.
+        if (/timeout|aborted|503|high demand|overloaded|UNAVAILABLE|404|not found|no longer available|429|quota|RESOURCE_EXHAUSTED/i.test(msg)) continue;
+        throw e;
+      }
     }
+    const msg = String((last as Error)?.message ?? last);
+    if (/429|quota|RESOURCE_EXHAUSTED/i.test(msg)) throw new Error("quota IA gratuit atteint, réessaie plus tard");
+    throw new Error(`IA indisponible (tous les modèles ont échoué) : ${msg.slice(0, 150)}`);
   }
 
   /** CV PDF → texte brut fidèle. */

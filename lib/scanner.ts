@@ -2,6 +2,8 @@
  * Orchestration par compte, entièrement en mémoire :
  * collecte → offres jamais vues → tri gratuit → scoring IA → e-mail des meilleures.
  * En base, on n'écrit que l'empreinte des offres notées (seen_jobs) et les 10 meilleurs matchs.
+ * Le scan respecte une échéance (deadline) pour ne jamais dépasser la limite de 300 s de Vercel,
+ * et peut publier sa progression (onProgress) pour l'affichage en direct.
  */
 import { JobFilter, Text, type RawJob, type Settings, type Verdict } from "./core.ts";
 import { JobSource } from "./sources.ts";
@@ -10,9 +12,31 @@ import { Mailer } from "./mailer.ts";
 import { Matches, Private, Profiles, SeenJobs } from "./repos.ts";
 import { admin, check } from "./supabase.ts";
 
-export interface ScanReport { fetched: number; fresh: number; scored: number; matched: number; sent: number; errors: string[] }
+export interface ScanReport { fetched: number; fresh: number; scored: number; matched: number; sent: number; best: number | null; errors: string[] }
+
+export type ScanEvent =
+  | { type: "collect"; sources: string[] }
+  | { type: "source"; name: string; count: number; error?: string; done: number; total: number }
+  | { type: "filter"; fetched: number; fresh: number; toScore: number }
+  | { type: "scoring"; done: number; total: number; best: number | null }
+  | { type: "email"; sent: number }
+  | { type: "done"; report: ScanReport; top: { title: string; company: string | null; score: number }[] };
+
+export interface ScanOptions { deadline?: number; onProgress?: (e: ScanEvent) => void }
+
+/** Nom lisible d'une source pour l'affichage. */
+export function sourceLabel(name: string): string {
+  if (name === "web") return "Recherche web (LinkedIn, Indeed, HelloWork…)";
+  if (name === "france_travail") return "France Travail";
+  if (name === "adzuna") return "Adzuna";
+  const [type, id] = name.split(":");
+  return `Site carrière ${id ?? type}`;
+}
 
 export class Scanner {
+  /** Durée maximale d'un scan (la fonction Vercel est coupée à 300 s). */
+  static readonly BUDGET_MS = Number(process.env.SCAN_BUDGET_MS ?? 230_000);
+
   private constructor(private readonly userId: string, private readonly email: string, private readonly settings: Settings) {}
 
   /** Charge le compte avec le client service_role (cron, ingestion, scan manuel après authentification). */
@@ -25,26 +49,48 @@ export class Scanner {
   }
 
   /** Scan complet à partir des sources du compte. */
-  async run(): Promise<ScanReport> {
+  async run(opts: ScanOptions = {}): Promise<ScanReport> {
+    const deadline = opts.deadline ?? Date.now() + Scanner.BUDGET_MS;
+    const emit = opts.onProgress ?? (() => {});
     const errors: string[] = [];
     const sources = JobSource.forSettings(this.settings);
     if (!sources.length) errors.push("aucune source active ou configurée");
-    const results = await Promise.allSettled(sources.map((s) => s.fetch()));
-    const collected = results.flatMap((r, i) => {
-      if (r.status === "fulfilled") return r.value;
-      errors.push(`${sources[i].name} : ${String(r.reason).slice(0, 200)}`);
-      return [];
-    });
-    const report = await this.process(collected, Number(process.env.MAX_SCORED_PER_RUN ?? 40));
+    emit({ type: "collect", sources: sources.map((s) => sourceLabel(s.name)) });
+
+    // Collecte en parallèle, bornée à la moitié du temps disponible.
+    let done = 0;
+    const collectBy = Date.now() + (deadline - Date.now()) / 2;
+    const results = await Promise.all(sources.map(async (s) => {
+      try {
+        const jobs = await Promise.race([
+          s.fetch(),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error("trop lent, ignorée pour ce scan")), Math.max(5_000, collectBy - Date.now()))),
+        ]);
+        emit({ type: "source", name: sourceLabel(s.name), count: jobs.length, done: ++done, total: sources.length });
+        return jobs;
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e).slice(0, 200);
+        errors.push(`${sourceLabel(s.name)} : ${msg}`);
+        emit({ type: "source", name: sourceLabel(s.name), count: 0, error: msg, done: ++done, total: sources.length });
+        return [];
+      }
+    }));
+    const report = await this.process(results.flat(), Number(process.env.MAX_SCORED_PER_RUN ?? 40), { deadline, onProgress: emit });
     await Private.touchScan(this.userId);
     return { ...report, errors: [...errors, ...report.errors] };
   }
 
   /** Traite une liste d'offres (scan ou alertes e-mail). */
-  async process(jobs: RawJob[], maxScored: number): Promise<ScanReport> {
+  async process(jobs: RawJob[], maxScored: number, opts: ScanOptions = {}): Promise<ScanReport> {
+    const deadline = opts.deadline ?? Date.now() + Scanner.BUDGET_MS;
+    const emit = opts.onProgress ?? (() => {});
     const { cvText, filters, notify } = this.settings;
-    const report: ScanReport = { fetched: jobs.length, fresh: 0, scored: 0, matched: 0, sent: 0, errors: [] };
-    if (!cvText) return { ...report, errors: ["aucun CV importé : rien n'est noté"] };
+    const report: ScanReport = { fetched: jobs.length, fresh: 0, scored: 0, matched: 0, sent: 0, best: null, errors: [] };
+    if (!cvText) {
+      report.errors.push("aucun CV importé : rien n'est noté");
+      emit({ type: "done", report, top: [] });
+      return report;
+    }
 
     // 1. Dédoublonnage dans le lot, puis on écarte ce qui a déjà été noté.
     const byKey = new Map(jobs.map((j) => [SeenJobs.key(j), j]));
@@ -58,18 +104,26 @@ export class Scanner {
       .filter(({ job }) => !filter.reject(job))
       .sort((a, b) => (Date.parse(b.job.postedAt ?? "") || 0) - (Date.parse(a.job.postedAt ?? "") || 0))
       .slice(0, maxScored);
+    emit({ type: "filter", fetched: jobs.length, fresh: unseen.size, toScore: toScore.length });
 
-    // 3. Scoring IA par lots de JobAI.BATCH offres (une requête par lot). Une offre non notée n'est pas marquée : elle sera retentée.
+    // 3. Scoring IA par lots (une requête par lot). Une offre non notée n'est pas marquée : elle sera retentée.
     const scored: { key: string; job: RawJob; verdict: Verdict }[] = [];
+    emit({ type: "scoring", done: 0, total: toScore.length, best: null });
     for (let i = 0; i < toScore.length; i += JobAI.BATCH) {
+      if (Date.now() > deadline - 50_000) {
+        report.errors.push(`temps écoulé : ${toScore.length - i} offre(s) seront notées au prochain scan`);
+        break;
+      }
       const batch = toScore.slice(i, i + JobAI.BATCH);
       try {
         const verdicts = await JobAI.scoreBatch(batch.map((b) => b.job), cvText, filters);
         batch.forEach((item, k) => { if (verdicts[k]) scored.push({ ...item, verdict: verdicts[k]! }); });
       } catch (e) {
         report.errors.push(`scoring : ${String((e as Error)?.message ?? e).slice(0, 150)}`);
-        if (/quota/i.test(String(e))) break; // inutile d'insister : les offres restantes passeront au prochain scan
+        if (/quota|indisponible/i.test(String(e))) break; // inutile d'insister : les offres restantes passeront au prochain scan
       }
+      report.best = scored.reduce<number | null>((m, s) => (m === null || s.verdict.score > m ? s.verdict.score : m), null);
+      emit({ type: "scoring", done: Math.min(i + batch.length, toScore.length), total: toScore.length, best: report.best });
     }
     report.scored = scored.length;
     await SeenJobs.mark(this.userId, scored.map((s) => s.key));
@@ -89,8 +143,10 @@ export class Scanner {
       } catch (e) {
         report.errors.push(`e-mail : ${String(e).slice(0, 150)}`);
       }
+      emit({ type: "email", sent: report.sent });
     }
     await Matches.save(this.userId, good, sentAt);
+    emit({ type: "done", report, top: good.slice(0, 3).map(({ job, verdict }) => ({ title: job.title, company: job.company, score: verdict.score })) });
     return report;
   }
 }

@@ -10,7 +10,6 @@ import { Matches, Private, Profiles } from "@/lib/repos.ts";
 import { CAREER_TYPES, CONTRACTS, Text, type CareerSite, type CareerType } from "@/lib/core.ts";
 import { JobAI } from "@/lib/ai.ts";
 import { Mailer } from "@/lib/mailer.ts";
-import { Scanner } from "@/lib/scanner.ts";
 
 const field = (fd: FormData, k: string) => String(fd.get(k) ?? "");
 const SET = "/settings";
@@ -230,20 +229,6 @@ export async function sendTestEmail() {
   if (!(await Private.claim(user.id, "testmail"))) await go(SET, "Patiente quelques minutes avant un nouvel e-mail de test.");
   try { await Mailer.sendTest(user.email); } catch (e) { await go(SET, String(e).slice(0, 250)); }
   await go(SET, `E-mail de test envoyé à ${user.email}.`, "ok");
-}
-
-export async function scanNow() {
-  const user = await requireUser();
-  const l = Private.LIMITS.scan;
-  if (!(await Private.claim(user.id, "scan"))) await go("/", `Scan manuel limité à ${l.max} par jour, un toutes les ${l.minutes} minutes.`);
-  let r: Awaited<ReturnType<Scanner["run"]>>;
-  try {
-    r = await (await Scanner.forUser(user.id)).run();
-  } catch (e) {
-    return go("/", `Le scan a échoué : ${String((e as Error)?.message ?? e).slice(0, 250)}`);
-  }
-  const msg = `Scan terminé : ${r.fetched} offres collectées, ${r.fresh} nouvelles, ${r.scored} notées, ${r.matched} au-dessus de ton seuil, ${r.sent} envoyées par e-mail.`;
-  await go("/", r.errors.length ? `${msg} Problèmes : ${r.errors.slice(0, 3).join(" | ")}` : msg, r.errors.length && !r.scored ? "err" : "ok");
 }
 
 export async function dismissMatch(fd: FormData) {

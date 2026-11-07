@@ -115,10 +115,18 @@ export class Text {
     return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9+#]+/g, " ").trim();
   }
 
-  /** `needle` apparaît comme mot(s) entier(s) dans `haystack`. */
-  static hasWords(haystack: string, needle: string): boolean {
+  /**
+   * `needle` apparaît comme mot(s) entier(s) dans `haystack`.
+   * `inflected` accepte aussi pluriel et féminin (risque → risques, analyst → analyste) : utile pour les mots-clés
+   * recherchés, mais pas pour les exclusions (« intern » ne doit pas exclure « contrôle interne »).
+   */
+  static hasWords(haystack: string, needle: string, inflected = false): boolean {
     const n = Text.norm(needle);
-    return !!n && ` ${Text.norm(haystack)} `.includes(` ${n} `);
+    if (!n) return false;
+    const h = ` ${Text.norm(haystack)} `;
+    if (!inflected) return h.includes(` ${n} `);
+    const words = n.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?:e|s|x|es)?");
+    return new RegExp(`(^| )${words.join(" ")}( |$)`).test(h.trim());
   }
 
   static cut(s: string | null | undefined, max: number): string | null {
@@ -159,7 +167,7 @@ export class JobFilter {
     const { f } = this;
     const excluded = f.excludeKeywords.find((k) => Text.hasWords(job.title, k));
     if (excluded) return `titre exclu (« ${excluded} »)`;
-    if (f.titleKeywords.length && !f.titleKeywords.some((k) => Text.hasWords(job.title, k))) return "titre hors cible";
+    if (f.titleKeywords.length && !f.titleKeywords.some((k) => Text.hasWords(job.title, k, true))) return "titre hors cible";
     const contract = job.contract ?? Text.contract(job.title);
     if (contract && f.contractTypes.length && !f.contractTypes.includes(contract)) return `contrat ${contract}`;
     if (job.location && f.locations.length) {

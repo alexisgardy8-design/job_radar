@@ -15,12 +15,14 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   if (state.status === "anonymous" && mode === "2fa") redirect("/login");
   const flash = await readFlash();
 
-  const title = { signup: "Créer un compte", forgot: "Mot de passe oublié", "2fa": "Double authentification" }[mode ?? ""] ?? "Job Radar";
+  const title = { signup: "Créer un compte", forgot: "Mot de passe oublié", "2fa": "Double authentification" }[mode ?? ""] ?? "Connexion";
 
   return (
     <main className="login">
-      <div className="card">
-        <h1 style={{ fontSize: 20, marginTop: 0 }}>{title}</h1>
+      <div className="login-brand"><span className="brand-dot" />Job Radar</div>
+      <p className="login-tagline">Les offres qui collent à ton CV, notées par l&apos;IA, dans ta boîte mail chaque matin.</p>
+      <div className="card login-card">
+        <h1>{title}</h1>
         <Flash flash={flash} />
 
         {mode === "2fa" ? (

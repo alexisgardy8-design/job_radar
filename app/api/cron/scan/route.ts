@@ -21,9 +21,9 @@ export async function GET(req: Request) {
   const users = await Profiles.scannable();
   const report: { user: string; sent?: number; error?: string }[] = [];
   for (const id of users) {
-    if (Date.now() - started > 240_000) break; // les comptes restants passent en premier au prochain cron
+    if (Date.now() - started > 200_000) break; // les comptes restants passent en premier au prochain cron
     try {
-      report.push({ user: id, sent: (await (await Scanner.forUser(id)).run()).sent });
+      report.push({ user: id, sent: (await (await Scanner.forUser(id)).run({ deadline: started + 270_000 })).sent });
     } catch (e) {
       report.push({ user: id, error: String(e).slice(0, 200) });
     }
