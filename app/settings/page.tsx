@@ -1,7 +1,7 @@
 import { readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest, supabaseAnonKey, supabaseUrl } from "@/lib/supabase.ts";
 import { Private, Profiles } from "@/lib/repos.ts";
-import { CONTRACTS } from "@/lib/core.ts";
+import { CONTRACTS, LANGUAGES } from "@/lib/core.ts";
 import { Mailer } from "@/lib/mailer.ts";
 import { Flash, Nav, PendingSteps, SubmitButton } from "../components.tsx";
 import { MfaSetup } from "./mfa-setup.tsx";
@@ -47,22 +47,60 @@ export default async function SettingsPage() {
       <form action={saveSettings} className="stack">
         <section className="card stack" id="recherche">
           <h2><span className="step-num">2</span> 🧭 Ce que tu cherches</h2>
-          <label>Mots-clés de poste<span className="muted">Une offre est gardée si son titre contient l&apos;un d&apos;eux. Un par ligne.</span>
-            <textarea name="titleKeywords" defaultValue={f.titleKeywords.join("\n")} />
+          <label>Postes recherchés<span className="muted">Servent à chercher les offres et à mettre en avant celles dont le titre correspond. Un par ligne.</span>
+            <textarea name="titleKeywords" defaultValue={f.titleKeywords.join("\n")} placeholder={"Analyste risques\nContrôle interne\nAuditeur junior"} />
           </label>
-          <label>Mots à exclure du titre<textarea name="excludeKeywords" defaultValue={f.excludeKeywords.join("\n")} /></label>
-          <div className="checks">
-            {CONTRACTS.map((c) => <label key={c} className="check"><input type="checkbox" name={`contract_${c}`} defaultChecked={f.contractTypes.includes(c)} />{c}</label>)}
+
+          <div className="filter-grid">
+            <fieldset className="filter">
+              <legend>📝 Type de contrat</legend>
+              <div className="checks">
+                {CONTRACTS.map((c) => <label key={c} className="check"><input type="checkbox" name={`contract_${c}`} defaultChecked={f.contractTypes.includes(c)} />{c}</label>)}
+              </div>
+              <span className="muted small">Aucun coché = tous les contrats.</span>
+            </fieldset>
+
+            <fieldset className="filter">
+              <legend>📍 Localisation</legend>
+              <label>Villes ou régions<textarea name="locations" defaultValue={f.locations.join("\n")} placeholder={"Paris\nÎle-de-France\nRemote"} /></label>
+              <label>Départements<span className="muted">Numéros, ex. 75, 92 (utilisés par France Travail).</span>
+                <input type="text" name="departements" defaultValue={f.departements.join(", ")} placeholder="75, 92" />
+              </label>
+            </fieldset>
+
+            <fieldset className="filter">
+              <legend>🗣️ Langues que tu maîtrises</legend>
+              <div className="checks">
+                {LANGUAGES.map((l) => <label key={l} className="check"><input type="checkbox" name={`lang_${l}`} defaultChecked={f.languages.includes(l)} />{l.charAt(0).toUpperCase() + l.slice(1)}</label>)}
+              </div>
+              <span className="muted small">Les offres qui exigent une autre langue sont écartées. Aucune cochée = pas de filtre.</span>
+            </fieldset>
+
+            <fieldset className="filter">
+              <legend>🎓 Expérience demandée</legend>
+              <label>Au maximum
+                <select name="maxExperienceYears" defaultValue={f.maxExperienceYears === null ? "" : String(f.maxExperienceYears)}>
+                  <option value="">Peu importe</option>
+                  <option value="0">Débutant accepté (0 an)</option>
+                  <option value="1">1 an</option>
+                  <option value="2">2 ans</option>
+                  <option value="3">3 ans</option>
+                  <option value="5">5 ans</option>
+                  <option value="8">8 ans</option>
+                  <option value="10">10 ans</option>
+                </select>
+              </label>
+              <span className="muted small">Les offres qui demandent plus d&apos;années d&apos;expérience sont écartées (détecté par l&apos;IA).</span>
+            </fieldset>
           </div>
-          <div className="row">
-            <label>Lieux acceptés<textarea name="locations" defaultValue={f.locations.join("\n")} /></label>
-            <label>Départements (France Travail)<textarea name="departements" defaultValue={f.departements.join("\n")} /></label>
-          </div>
+
           <div className="row">
             <label>Début au plus tôt<input type="date" name="minStartDate" defaultValue={f.minStartDate ?? ""} /></label>
-            <label>Score minimum pour l&apos;e-mail<input type="number" name="scoreThreshold" min={0} max={100} defaultValue={f.scoreThreshold} /></label>
+            <label>Score minimum d&apos;un match<span className="muted">En dessous, l&apos;offre n&apos;est ni envoyée ni mise en avant (visible sur demande).</span>
+              <input type="number" name="scoreThreshold" min={0} max={100} defaultValue={f.scoreThreshold} />
+            </label>
           </div>
-          <label className="check"><input type="checkbox" name="strictStartDate" defaultChecked={f.strictStartDate} />Écarter les offres qui démarrent explicitement avant cette date</label>
+          <label className="check"><input type="checkbox" name="strictStartDate" defaultChecked={f.strictStartDate} />Pénaliser les offres qui démarrent explicitement avant cette date</label>
         </section>
 
         <section className="card stack" id="sources">

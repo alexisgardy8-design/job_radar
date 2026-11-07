@@ -51,15 +51,18 @@ export class Profiles {
   }
 }
 
-/** Meilleurs matchs du compte (10 max). */
+/** Offres notées du compte : les matchs (10 affichés) et, sur demande, celles sous le seuil ou écartées. */
 export class Matches {
-  static readonly KEEP = 10;
+  /** Matchs mis en avant et envoyés par e-mail. */
+  static readonly SHOW = 10;
+  /** Offres notées gardées au total (matchs + offres sous le seuil), 30 jours maximum. */
+  static readonly STORE = 30;
 
   constructor(private readonly db: SupabaseClient, private readonly userId: string) {}
 
   async list(): Promise<Match[]> {
     const res = await this.db.from("matches").select("id, title, company, location, contract, source, url, score, verdict, found_at, sent_at")
-      .eq("user_id", this.userId).order("score", { ascending: false }).order("found_at", { ascending: false }).limit(Matches.KEEP);
+      .eq("user_id", this.userId).order("score", { ascending: false }).order("found_at", { ascending: false }).limit(Matches.STORE);
     return check(res, "lecture des matchs") as Match[];
   }
 
@@ -67,15 +70,15 @@ export class Matches {
     check(await this.db.from("matches").delete().eq("user_id", this.userId).eq("id", id), "suppression du match");
   }
 
-  /** Ajoute les nouveaux matchs puis ne garde que les KEEP meilleurs (service_role). */
-  static async save(userId: string, items: { key: string; job: RawJob; verdict: Verdict }[], sentAt: string | null): Promise<void> {
+  /** Ajoute les offres notées puis ne garde que les STORE meilleures (service_role). */
+  static async save(userId: string, items: { key: string; job: RawJob; verdict: Verdict; sentAt: string | null }[]): Promise<void> {
     if (!items.length) return;
     const db = admin();
-    check(await db.from("matches").upsert(items.map(({ key, job, verdict }) => ({
+    check(await db.from("matches").upsert(items.map(({ key, job, verdict, sentAt }) => ({
       user_id: userId, job_key: key, title: Text.cut(job.title, 300), company: Text.cut(job.company, 200), location: Text.cut(job.location, 200),
       contract: job.contract ?? verdict.contractDetected, source: job.source, url: job.url, score: verdict.score, verdict, sent_at: sentAt,
     })), { onConflict: "user_id,job_key", ignoreDuplicates: true }), "enregistrement des matchs");
-    check(await db.rpc("trim_matches", { p_user: userId, p_keep: Matches.KEEP }), "tri des matchs");
+    check(await db.rpc("trim_matches", { p_user: userId, p_keep: Matches.STORE }), "tri des matchs");
   }
 }
 

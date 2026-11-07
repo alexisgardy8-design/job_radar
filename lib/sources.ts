@@ -196,10 +196,10 @@ export abstract class CareerSource extends JobSource {
     }
   }
 
-  /** Ne garde que les offres qui passent le filtre (évite de charger des descriptions inutiles). */
+  /** Garde les 25 offres les plus pertinentes qui passent le filtre (évite de charger des descriptions inutiles). */
   protected keep(jobs: RawJob[]): RawJob[] {
     const filter = new JobFilter(this.filters);
-    return jobs.filter((j) => !filter.reject(j)).slice(0, 25);
+    return jobs.filter((j) => !filter.reject(j)).sort((a, b) => filter.relevance(b) - filter.relevance(a)).slice(0, 25);
   }
 }
 

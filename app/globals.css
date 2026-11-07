@@ -229,3 +229,18 @@ details summary { cursor: pointer; }
 .flash.err { background: var(--bad-soft); color: var(--bad); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- Filtres (réglages) ---------- */
+.filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+fieldset.filter { margin: 0; border: 1.5px solid var(--line); border-radius: var(--radius-sm); padding: 14px 16px 16px; display: grid; gap: 10px; align-content: start; background: var(--bg); }
+fieldset.filter legend { font-weight: 800; font-size: 14px; padding: 0 6px; }
+fieldset.filter .checks .check { background: var(--card); }
+fieldset.filter textarea { min-height: 70px; }
+
+/* ---------- Source et offres sous le seuil ---------- */
+.source-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; padding: 3px 10px 3px 4px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); color: var(--ink); }
+.source-pill .source-ico { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 900; color: #fff; background: var(--grad); }
+.job.dim { opacity: .82; box-shadow: none; }
+.job.dim:hover { opacity: 1; }
+.reveal { display: flex; justify-content: center; margin: 8px 0 18px; }
+.pill.warn { background: var(--mid-soft); color: var(--mid); }

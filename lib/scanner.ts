@@ -97,12 +97,14 @@ export class Scanner {
     const unseen = await SeenJobs.unseen(this.userId, [...byKey.keys()]);
     report.fresh = unseen.size;
 
-    // 2. Tri gratuit. Les offres écartées ne sont pas marquées : elles reviendront si les filtres changent.
-    // Les plus récentes d'abord ; au-delà de maxScored, les offres restent non vues et passent au scan suivant.
+    // 2. Filtres gratuits (contrat, lieu). Les offres écartées ne sont pas marquées : elles reviendront si les filtres changent.
+    // Priorité aux titres qui correspondent aux postes recherchés, puis aux plus récentes ;
+    // au-delà de maxScored, les offres restent non vues et passent au scan suivant.
     const filter = new JobFilter(filters);
     const toScore = [...unseen].map((key) => ({ key, job: byKey.get(key)! }))
       .filter(({ job }) => !filter.reject(job))
-      .sort((a, b) => (Date.parse(b.job.postedAt ?? "") || 0) - (Date.parse(a.job.postedAt ?? "") || 0))
+      .sort((a, b) => filter.relevance(b.job) - filter.relevance(a.job)
+        || (Date.parse(b.job.postedAt ?? "") || 0) - (Date.parse(a.job.postedAt ?? "") || 0))
       .slice(0, maxScored);
     emit({ type: "filter", fetched: jobs.length, fresh: unseen.size, toScore: toScore.length });
 
@@ -117,7 +119,11 @@ export class Scanner {
       const batch = toScore.slice(i, i + JobAI.BATCH);
       try {
         const verdicts = await JobAI.scoreBatch(batch.map((b) => b.job), cvText, filters);
-        batch.forEach((item, k) => { if (verdicts[k]) scored.push({ ...item, verdict: verdicts[k]! }); });
+        // Filtres langue / expérience, appliqués sur ce que l'IA a détecté.
+        batch.forEach((item, k) => {
+          const v = verdicts[k];
+          if (v) scored.push({ ...item, verdict: { ...v, filteredReason: filter.afterScoring(v) } });
+        });
       } catch (e) {
         report.errors.push(`scoring : ${String((e as Error)?.message ?? e).slice(0, 150)}`);
         if (/quota|indisponible/i.test(String(e))) break; // inutile d'insister : les offres restantes passeront au prochain scan
@@ -128,15 +134,17 @@ export class Scanner {
     report.scored = scored.length;
     await SeenJobs.mark(this.userId, scored.map((s) => s.key));
 
-    // 4. Les meilleures : e-mail puis conservation des 10 meilleures du compte.
-    const good = scored.filter((s) => s.verdict.score >= filters.scoreThreshold).sort((a, b) => b.verdict.score - a.verdict.score).slice(0, Matches.KEEP);
+    // 4. Les matchs (score ≥ seuil et filtres respectés) sont envoyés par e-mail ; les autres sont gardés pour l'affichage sur demande.
+    const byScore = [...scored].sort((a, b) => b.verdict.score - a.verdict.score);
+    const good = byScore.filter((s) => s.verdict.score >= filters.scoreThreshold && !s.verdict.filteredReason).slice(0, Matches.SHOW);
+    const others = byScore.filter((s) => !good.includes(s)).slice(0, Matches.STORE - Matches.SHOW);
     report.matched = good.length;
     let sentAt: string | null = null;
     if (good.length && notify.enabled) {
       try {
         await Mailer.sendJobs(this.email, good.map(({ job, verdict }) => ({
           title: job.title, company: job.company, location: job.location, contract: job.contract ?? verdict.contractDetected,
-          url: Text.isUrl(job.url) ? job.url : "#", score: verdict.score, verdict,
+          url: Text.isUrl(job.url) ? job.url : "#", score: verdict.score, verdict, source: job.source,
         })));
         sentAt = new Date().toISOString();
         report.sent = good.length;
@@ -145,7 +153,7 @@ export class Scanner {
       }
       emit({ type: "email", sent: report.sent });
     }
-    await Matches.save(this.userId, good, sentAt);
+    await Matches.save(this.userId, [...good.map((g) => ({ ...g, sentAt })), ...others.map((o) => ({ ...o, sentAt: null }))]);
     emit({ type: "done", report, top: good.slice(0, 3).map(({ job, verdict }) => ({ title: job.title, company: job.company, score: verdict.score })) });
     return report;
   }

@@ -1,9 +1,9 @@
 /** Envoi des offres par e-mail (SMTP, ex. Gmail + mot de passe d'application : gratuit, ~500 mails/jour). */
 import nodemailer from "nodemailer";
-import { Text, type Match } from "./core.ts";
+import { Text, sourceName, type Match } from "./core.ts";
 
 /** Contenu d'une offre dans l'e-mail. */
-export type MailJob = Pick<Match, "title" | "company" | "location" | "contract" | "url" | "score" | "verdict">;
+export type MailJob = Pick<Match, "title" | "company" | "location" | "contract" | "url" | "score" | "verdict" | "source">;
 
 const esc = (s: string | null | undefined) => (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -48,7 +48,7 @@ export class Mailer {
   static async sendTest(to: string): Promise<void> {
     await Mailer.sendJobs(to, [{
       title: "Offre de test : tes e-mails Job Radar fonctionnent", company: "Job Radar", location: "Paris",
-      contract: "CDI", url: "https://example.com", score: 99,
+      contract: "CDI", url: "https://example.com", score: 99, source: "web:linkedin.com",
       verdict: { score: 99, summary: "Si tu lis ceci, l'envoi fonctionne.", strengths: ["Configuration SMTP OK"], gaps: [], startDate: null, startDateCompatible: "unknown", experienceRequired: null, contractDetected: "CDI" },
     }]);
   }
@@ -58,7 +58,7 @@ export class Mailer {
     const cards = jobs.map((j) => {
       const v = j.verdict;
       const [bg, fg] = j.score >= 85 ? ["#e6f4ea", "#1e6b3a"] : ["#eef4e6", "#3d6b1e"];
-      const meta = [j.company, j.location, j.contract ?? v?.contractDetected, v?.experienceRequired && `exp. ${v.experienceRequired}`, v?.startDate && `début : ${v.startDate}`]
+      const meta = [`Trouvé sur ${sourceName(j.source, j.url)}`, j.company, j.location, j.contract ?? v?.contractDetected, v?.experienceRequired && `exp. ${v.experienceRequired}`, v?.startDate && `début : ${v.startDate}`]
         .filter(Boolean).map(esc).join(" · ");
       return `<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" style="border:1px solid #e6e5e0;border-radius:10px;background:#fff"><tr><td style="padding:16px 18px">
         <span style="background:${bg};color:${fg};font-weight:700;border-radius:12px;padding:2px 10px;font-size:13px">${j.score}/100</span>
@@ -67,7 +67,7 @@ export class Mailer {
         ${v?.summary ? `<p style="font-size:14px;margin:10px 0 6px">${esc(v.summary)}</p>` : ""}
         ${v?.strengths.length ? `<div style="font-size:13px;color:#1e6b3a">✔ ${v.strengths.map(esc).join("<br>✔ ")}</div>` : ""}
         ${v?.gaps.length ? `<div style="font-size:13px;color:#8a5300;margin-top:4px">⚠ ${v.gaps.map(esc).join("<br>⚠ ")}</div>` : ""}
-        <a href="${esc(Text.isUrl(j.url) ? j.url : "#")}" style="display:inline-block;margin-top:12px;background:#2f5d50;color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:8px;font-size:14px">Voir l'offre et postuler →</a>
+        <a href="${esc(Text.isUrl(j.url) ? j.url : "#")}" style="display:inline-block;margin-top:12px;background:#2f5d50;color:#fff;text-decoration:none;font-weight:600;padding:9px 16px;border-radius:8px;font-size:14px">Voir l'offre sur ${esc(sourceName(j.source, j.url))} →</a>
       </td></tr></table></td></tr>`;
     }).join("");
     return `<!doctype html><html lang="fr"><body style="margin:0;background:#f7f7f5;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#1c1c1a">

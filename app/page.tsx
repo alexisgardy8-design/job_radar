@@ -2,7 +2,7 @@ import Link from "next/link";
 import { readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest } from "@/lib/supabase.ts";
 import { Matches, Profiles } from "@/lib/repos.ts";
-import { Text, type Settings } from "@/lib/core.ts";
+import { Text, sourceName, type Match, type Settings } from "@/lib/core.ts";
 import { dismissMatch } from "./actions.ts";
 import { Flash, Nav, Ring, ScanPanel } from "./components.tsx";
 
@@ -14,7 +14,7 @@ const day = (d: string | null) => (d ? new Date(d).toLocaleDateString("fr-FR", {
 function profileSteps(s: Settings, has2fa: boolean) {
   return [
     { label: "Importer ton CV", done: !!s.cvText, points: 35, href: "/settings#cv" },
-    { label: "Choisir tes mots-clés", done: s.filters.titleKeywords.length > 0, points: 15, href: "/settings#recherche" },
+    { label: "Indiquer les postes recherchés", done: s.filters.titleKeywords.length > 0, points: 15, href: "/settings#recherche" },
     { label: "Indiquer tes lieux", done: s.filters.locations.length > 0, points: 10, href: "/settings#recherche" },
     { label: "Choisir tes contrats", done: s.filters.contractTypes.length > 0, points: 10, href: "/settings#recherche" },
     { label: "Activer les e-mails", done: s.notify.enabled, points: 10, href: "/settings#email" },
@@ -23,11 +23,15 @@ function profileSteps(s: Settings, has2fa: boolean) {
 }
 
 /** Les meilleurs matchs du compte (10 max), conservés 30 jours. */
-export default async function Home() {
+export default async function Home({ searchParams }: { searchParams: Promise<{ voir?: string }> }) {
+  const showAll = (await searchParams).voir === "tout";
   const user = await requireUser();
   const db = await forRequest();
-  const [s, matches, flash] = await Promise.all([new Profiles(db, user.id).get(), new Matches(db, user.id).list(), readFlash()]);
+  const [s, all, flash] = await Promise.all([new Profiles(db, user.id).get(), new Matches(db, user.id).list(), readFlash()]);
   const threshold = s.filters.scoreThreshold;
+  // Le seuil peut avoir changé depuis le scan : on recalcule à l'affichage.
+  const matches = all.filter((m) => m.score >= threshold && !m.verdict?.filteredReason).slice(0, Matches.SHOW);
+  const others = all.filter((m) => !matches.includes(m));
   const steps = profileSteps(s, !!user.totpFactorId);
   const strength = steps.reduce((n, x) => n + (x.done ? x.points : 0), 0);
   const next = steps.find((x) => !x.done);
@@ -61,7 +65,7 @@ export default async function Home() {
         <section>
           <div className="section-head">
             <h2>🎯 Tes meilleurs matchs</h2>
-            <span className="muted small">Les {Matches.KEEP} meilleurs, gardés 30 jours</span>
+            <span className="muted small">Score ≥ {threshold} et filtres respectés · {Matches.SHOW} max, gardés 30 jours</span>
           </div>
 
           {!matches.length && (
@@ -72,46 +76,25 @@ export default async function Home() {
             </div>
           )}
 
-          {matches.map((j, i) => {
-            const v = j.verdict;
-            const url = Text.isUrl(j.url) ? j.url : "#";
-            const tone = j.score >= 85 ? "good" : j.score >= threshold ? "brand" : "mid";
-            return (
-              <article key={j.id} className={`card job ${i === 0 ? "featured" : ""}`}>
-                <Ring value={j.score} tone={tone} />
-                <div className="job-body">
-                  <div className="job-badges">
-                    {i === 0 && <span className="pill hot">🔥 Top match</span>}
-                    {j.score >= 85 && i !== 0 && <span className="pill gem">💎 Pépite</span>}
-                    {j.sent_at && <span className="pill">📬 Reçu par e-mail</span>}
-                    <span className="pill soft">{day(j.found_at)}</span>
-                  </div>
-                  <h3><a href={url} target="_blank" rel="noopener noreferrer">{j.title}</a></h3>
-                  <div className="muted">{[j.company, j.location].filter(Boolean).join(" · ")}</div>
-                  <div className="tags">
-                    <span className="tag">{j.source.replace(/^(web|email):/, "")}</span>
-                    {(j.contract || v?.contractDetected) && <span className="tag">{j.contract ?? v?.contractDetected}</span>}
-                    {v?.experienceRequired && <span className="tag">exp. {v.experienceRequired}</span>}
-                    {v?.startDate && <span className={`tag ${v.startDateCompatible === "yes" ? "ok" : v.startDateCompatible === "no" ? "no" : ""}`}>début : {v.startDate}</span>}
-                  </div>
-                  {v && (
-                    <>
-                      <p className="summary">{v.summary}</p>
-                      <div className="pros-cons">
-                        {v.strengths.length > 0 && <ul className="pros">{v.strengths.map((x, k) => <li key={k}>{x}</li>)}</ul>}
-                        {v.gaps.length > 0 && <ul className="cons">{v.gaps.map((x, k) => <li key={k}>{x}</li>)}</ul>}
-                      </div>
-                    </>
-                  )}
-                  <form action={dismissMatch} className="job-actions">
-                    <a className="btn primary" href={url} target="_blank" rel="noopener noreferrer">Postuler →</a>
-                    <input type="hidden" name="id" value={j.id} />
-                    <button className="btn ghost" type="submit">Masquer</button>
-                  </form>
-                </div>
-              </article>
-            );
-          })}
+          {matches.map((j, i) => <MatchCard key={j.id} j={j} rank={i} threshold={threshold} />)}
+
+          {others.length > 0 && (
+            <div className="reveal">
+              <Link className="btn ghost" href={showAll ? "/" : "/?voir=tout#autres"} scroll={!showAll}>
+                {showAll ? "Masquer les offres sous ton seuil" : `👀 Voir aussi ${others.length} offre${others.length > 1 ? "s" : ""} sous ton seuil ou écartée${others.length > 1 ? "s" : ""}`}
+              </Link>
+            </div>
+          )}
+
+          {showAll && others.length > 0 && (
+            <>
+              <div className="section-head" id="autres">
+                <h2>🗂️ Sous ton seuil ou écartées</h2>
+                <span className="muted small">Notées par l&apos;IA mais pas envoyées</span>
+              </div>
+              {others.map((j) => <MatchCard key={j.id} j={j} rank={-1} threshold={threshold} />)}
+            </>
+          )}
         </section>
 
         <aside>
@@ -144,10 +127,63 @@ export default async function Home() {
               {s.filters.contractTypes.map((c) => <span key={c} className="chip brand">{c}</span>)}
               {s.filters.locations.slice(0, 3).map((l) => <span key={l} className="chip">📍 {l}</span>)}
             </div>
+            <div className="chips">
+              {s.filters.languages.map((l) => <span key={l} className="chip">🗣️ {l}</span>)}
+              {s.filters.maxExperienceYears !== null && <span className="chip">🎓 ≤ {s.filters.maxExperienceYears} an{s.filters.maxExperienceYears > 1 ? "s" : ""} d&apos;exp.</span>}
+            </div>
             <Link className="btn ghost small" href="/settings#recherche">Modifier</Link>
           </div>
         </aside>
       </div>
     </main>
+  );
+}
+
+/** Carte d'une offre notée. rank = position parmi les matchs, -1 pour une offre sous le seuil ou écartée. */
+function MatchCard({ j, rank, threshold }: { j: Match; rank: number; threshold: number }) {
+  const v = j.verdict;
+  const url = Text.isUrl(j.url) ? j.url : "#";
+  const below = rank < 0;
+  const tone = j.score >= 85 ? "good" : j.score >= threshold ? "brand" : j.score >= 50 ? "mid" : "low";
+  const site = sourceName(j.source, j.url);
+  return (
+    <article className={`card job ${rank === 0 ? "featured" : ""} ${below ? "dim" : ""}`}>
+      <Ring value={j.score} tone={tone} />
+      <div className="job-body">
+        <div className="job-badges">
+          <span className="source-pill" title={`Offre trouvée sur ${site}`}><span className="source-ico">{site.charAt(0)}</span>Trouvé sur {site}</span>
+          {rank === 0 && <span className="pill hot">🔥 Top match</span>}
+          {!below && j.score >= 85 && rank !== 0 && <span className="pill gem">💎 Pépite</span>}
+          {below && v?.filteredReason && <span className="pill warn">⛔ {v.filteredReason}</span>}
+          {below && !v?.filteredReason && j.score < threshold && <span className="pill warn">Sous ton seuil ({j.score} &lt; {threshold})</span>}
+          {j.sent_at && <span className="pill">📬 Reçu par e-mail</span>}
+          <span className="pill soft">{day(j.found_at)}</span>
+        </div>
+        <h3><a href={url} target="_blank" rel="noopener noreferrer">{j.title}</a></h3>
+        <div className="muted">{[j.company, j.location].filter(Boolean).join(" · ")}</div>
+        <div className="tags">
+          {(j.contract || v?.contractDetected) && <span className="tag">📝 {j.contract ?? v?.contractDetected}</span>}
+          {(typeof v?.experienceYearsMin === "number" || v?.experienceRequired) && (
+            <span className="tag">🎓 {typeof v?.experienceYearsMin === "number" ? (v.experienceYearsMin === 0 ? "débutant accepté" : `${v.experienceYearsMin} an${v.experienceYearsMin > 1 ? "s" : ""} min.`) : v?.experienceRequired}</span>
+          )}
+          {v?.languagesRequired?.length ? <span className="tag">🗣️ {v.languagesRequired.join(", ")}</span> : null}
+          {v?.startDate && <span className={`tag ${v.startDateCompatible === "yes" ? "ok" : v.startDateCompatible === "no" ? "no" : ""}`}>📅 début : {v.startDate}</span>}
+        </div>
+        {v && (
+          <>
+            <p className="summary">{v.summary}</p>
+            <div className="pros-cons">
+              {v.strengths.length > 0 && <ul className="pros">{v.strengths.map((x, k) => <li key={k}>{x}</li>)}</ul>}
+              {v.gaps.length > 0 && <ul className="cons">{v.gaps.map((x, k) => <li key={k}>{x}</li>)}</ul>}
+            </div>
+          </>
+        )}
+        <form action={dismissMatch} className="job-actions">
+          <a className="btn primary" href={url} target="_blank" rel="noopener noreferrer">Postuler sur {site.replace(" (alerte e-mail)", "")} →</a>
+          <input type="hidden" name="id" value={j.id} />
+          <button className="btn ghost" type="submit">Masquer</button>
+        </form>
+      </div>
+    </article>
   );
 }

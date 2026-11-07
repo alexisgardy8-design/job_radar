@@ -6,15 +6,22 @@ export const CONTRACTS: ContractType[] = ["CDI", "CDD", "VIE", "STAGE", "ALTERNA
 export type CareerType = "greenhouse" | "lever" | "smartrecruiters" | "workday";
 export const CAREER_TYPES: CareerType[] = ["greenhouse", "lever", "smartrecruiters", "workday"];
 
+/** Langues proposées dans les réglages (forme canonique, en minuscules). */
+export const LANGUAGES = ["français", "anglais", "espagnol", "allemand", "italien", "portugais", "néerlandais", "arabe", "chinois"] as const;
+
 export interface Filters {
+  /** Postes recherchés : servent à interroger les sources et à prioriser les offres (pas à les exclure). */
   titleKeywords: string[];
-  excludeKeywords: string[];
   contractTypes: ContractType[];
   locations: string[];
   departements: string[];
   minStartDate: string | null;
   strictStartDate: boolean;
   scoreThreshold: number;
+  /** Langues maîtrisées : une offre qui en exige une autre est écartée. Vide = pas de filtre. */
+  languages: string[];
+  /** Années d'expérience exigées au maximum. null = pas de filtre. */
+  maxExperienceYears: number | null;
 }
 
 export interface CareerSite { type: CareerType; id: string; label: string }
@@ -50,6 +57,12 @@ export interface Verdict {
   startDateCompatible: "yes" | "no" | "unknown";
   experienceRequired: string | null;
   contractDetected: string | null;
+  /** Langues exigées par l'offre (absent sur les anciens verdicts). */
+  languagesRequired?: string[];
+  /** Années d'expérience minimum exigées (absent sur les anciens verdicts). */
+  experienceYearsMin?: number | null;
+  /** Raison pour laquelle l'offre est écartée par les filtres langue / expérience, sinon null. */
+  filteredReason?: string | null;
 }
 
 /** Offre retenue (score ≥ seuil) : envoyée par e-mail et gardée parmi les 10 meilleures du compte. */
@@ -72,13 +85,14 @@ export const DEFAULT_SETTINGS: Settings = {
   cvName: null,
   filters: {
     titleKeywords: ["risk", "risque", "contrôle interne", "audit", "analyst", "analyste", "graduate"],
-    excludeKeywords: ["stage", "stagiaire", "intern", "alternance", "apprenti", "senior", "head of", "director", "directeur", "lead"],
     contractTypes: ["CDI", "VIE"],
     locations: ["Paris", "Île-de-France", "La Défense", "Montrouge", "Hauts-de-Seine"],
     departements: ["75", "92"],
     minStartDate: "2027-09-01",
     strictStartDate: false,
     scoreThreshold: 70,
+    languages: ["français", "anglais"],
+    maxExperienceYears: 2,
   },
   sources: { webSearch: true, franceTravail: true, adzuna: true, careers: [] },
   notify: { enabled: true },
@@ -158,16 +172,43 @@ export class Text {
   }
 }
 
-/** Tri gratuit avant l'IA. Une information absente ne fait jamais écarter une offre. */
+/** Langue canonique citée dans un texte libre (« Anglais courant » → « anglais »), ou null. */
+const LANGUAGE_ALIASES: [string, RegExp][] = [
+  ["français", /\b(francais|french)\b/], ["anglais", /\b(anglais|english)\b/], ["espagnol", /\b(espagnol|spanish)\b/],
+  ["allemand", /\b(allemand|german|deutsch)\b/], ["italien", /\b(italien|italian)\b/], ["portugais", /\b(portugais|portuguese)\b/],
+  ["néerlandais", /\b(neerlandais|dutch|flamand)\b/], ["arabe", /\b(arabe|arabic)\b/], ["chinois", /\b(chinois|mandarin|chinese)\b/],
+];
+export function canonicalLanguage(label: string): string | null {
+  const n = Text.norm(label);
+  return LANGUAGE_ALIASES.find(([, re]) => re.test(n))?.[0] ?? null;
+}
+
+/** Nom lisible du site où l'offre a été trouvée. */
+export function sourceName(source: string, url?: string): string {
+  const SITES: [RegExp, string][] = [
+    [/linkedin/, "LinkedIn"], [/indeed/, "Indeed"], [/hellowork/, "HelloWork"], [/welcometothejungle/, "Welcome to the Jungle"],
+    [/jobteaser/, "JobTeaser"], [/apec/, "APEC"], [/francetravail|france_travail/, "France Travail"], [/wizbii/, "Wizbii"],
+    [/adzuna/, "Adzuna"], [/greenhouse/, "Greenhouse"], [/lever/, "Lever"], [/smartrecruiters/, "SmartRecruiters"],
+    [/myworkdayjobs|workday/, "Workday"], [/teamtailor/, "Teamtailor"],
+  ];
+  let host = "";
+  try { host = url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch {}
+  const hay = `${source} ${host}`.toLowerCase();
+  const site = SITES.find(([re]) => re.test(hay))?.[1] ?? (host || source.replace(/^(web|email):/, ""));
+  return source.startsWith("email:") ? `${site} (alerte e-mail)` : site;
+}
+
+/**
+ * Filtres de l'utilisateur.
+ * - reject() : avant l'IA, gratuit — contrat et localisation. Une information absente ne fait jamais écarter une offre.
+ * - afterScoring() : après l'IA, qui détecte les langues et l'expérience exigées.
+ * - relevance() : priorise les offres dont le titre correspond aux postes recherchés (sans exclure les autres).
+ */
 export class JobFilter {
   constructor(private readonly f: Filters) {}
 
-  /** Raison du rejet, ou null si l'offre est gardée. */
   reject(job: RawJob): string | null {
     const { f } = this;
-    const excluded = f.excludeKeywords.find((k) => Text.hasWords(job.title, k));
-    if (excluded) return `titre exclu (« ${excluded} »)`;
-    if (f.titleKeywords.length && !f.titleKeywords.some((k) => Text.hasWords(job.title, k, true))) return "titre hors cible";
     const contract = job.contract ?? Text.contract(job.title);
     if (contract && f.contractTypes.length && !f.contractTypes.includes(contract)) return `contrat ${contract}`;
     if (job.location && f.locations.length) {
@@ -178,5 +219,21 @@ export class JobFilter {
       if (!ok) return `lieu (${job.location})`;
     }
     return null;
+  }
+
+  afterScoring(v: Verdict): string | null {
+    const { f } = this;
+    if (f.languages.length && v.languagesRequired?.length) {
+      const missing = [...new Set(v.languagesRequired.map(canonicalLanguage).filter((l): l is string => !!l && !f.languages.includes(l)))];
+      if (missing.length) return `langue demandée : ${missing.join(", ")}`;
+    }
+    if (f.maxExperienceYears !== null && typeof v.experienceYearsMin === "number" && v.experienceYearsMin > f.maxExperienceYears) {
+      return `${v.experienceYearsMin} ans d'expérience demandés`;
+    }
+    return null;
+  }
+
+  relevance(job: RawJob): number {
+    return this.f.titleKeywords.some((k) => Text.hasWords(job.title, k, true)) ? 1 : 0;
   }
 }

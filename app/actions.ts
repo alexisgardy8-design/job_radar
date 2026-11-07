@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 import { authState, go, passwordOk, requireUser, setFlash } from "@/lib/auth.ts";
 import { admin, forRequest } from "@/lib/supabase.ts";
 import { Matches, Private, Profiles } from "@/lib/repos.ts";
-import { CAREER_TYPES, CONTRACTS, Text, type CareerSite, type CareerType } from "@/lib/core.ts";
+import { CAREER_TYPES, CONTRACTS, LANGUAGES, Text, type CareerSite, type CareerType } from "@/lib/core.ts";
 import { JobAI } from "@/lib/ai.ts";
 import { Mailer } from "@/lib/mailer.ts";
 
@@ -210,13 +210,14 @@ export async function saveSettings(fd: FormData) {
   await new Profiles(await forRequest(), user.id).update({
     filters: {
       titleKeywords: Text.list(field(fd, "titleKeywords"), 15),
-      excludeKeywords: Text.list(field(fd, "excludeKeywords"), 40),
       contractTypes: CONTRACTS.filter((c) => fd.get(`contract_${c}`)),
       locations: Text.list(field(fd, "locations"), 15),
       departements: Text.list(field(fd, "departements"), 5).filter((d) => /^(\d{2,3}|2[AB])$/.test(d)),
       minStartDate: /^\d{4}-\d{2}-\d{2}$/.test(field(fd, "minStartDate")) ? field(fd, "minStartDate") : null,
       strictStartDate: fd.get("strictStartDate") === "on",
       scoreThreshold: Math.max(0, Math.min(100, Number(field(fd, "scoreThreshold")) || 70)),
+      languages: LANGUAGES.filter((l) => fd.get(`lang_${l}`)),
+      maxExperienceYears: field(fd, "maxExperienceYears") === "" ? null : Math.max(0, Math.min(30, Number(field(fd, "maxExperienceYears")) || 0)),
     },
     sources: { webSearch: fd.get("webSearch") === "on", franceTravail: fd.get("franceTravail") === "on", adzuna: fd.get("adzuna") === "on", careers },
     notifyEnabled: fd.get("notifyEnabled") === "on",
