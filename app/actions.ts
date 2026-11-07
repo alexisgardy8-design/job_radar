@@ -9,6 +9,7 @@ import { admin, forRequest } from "@/lib/supabase.ts";
 import { Matches, Private, Profiles } from "@/lib/repos.ts";
 import { CAREER_TYPES, CONTRACTS, LANGUAGES, Text, type CareerSite, type CareerType } from "@/lib/core.ts";
 import { JobAI } from "@/lib/ai.ts";
+import { SECTOR_IDS } from "@/lib/companies.ts";
 import { Mailer } from "@/lib/mailer.ts";
 
 const field = (fd: FormData, k: string) => String(fd.get(k) ?? "");
@@ -240,6 +241,7 @@ export async function saveSettings(fd: FormData) {
       strictStartDate: fd.get("strictStartDate") === "on",
       scoreThreshold: Math.max(0, Math.min(100, Number(field(fd, "scoreThreshold")) || 70)),
       languages: LANGUAGES.filter((l) => fd.get(`lang_${l}`)),
+      sectors: SECTOR_IDS.filter((id) => fd.get(`sector_${id}`)),
       maxExperienceYears: field(fd, "maxExperienceYears") === "" ? null : Math.max(0, Math.min(30, Number(field(fd, "maxExperienceYears")) || 0)),
     },
     sources: { webSearch: fd.get("webSearch") === "on", franceTravail: fd.get("franceTravail") === "on", adzuna: fd.get("adzuna") === "on", careers },

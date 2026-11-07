@@ -2,6 +2,7 @@ import { nameOf, readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest, supabaseAnonKey, supabaseUrl } from "@/lib/supabase.ts";
 import { Private, Profiles } from "@/lib/repos.ts";
 import { CONTRACTS, LANGUAGES } from "@/lib/core.ts";
+import { SECTORS, companiesFor } from "@/lib/companies.ts";
 import { Mailer } from "@/lib/mailer.ts";
 import { Flash, Nav, PendingSteps, SubmitButton } from "../components.tsx";
 import { MfaSetup } from "./mfa-setup.tsx";
@@ -85,6 +86,22 @@ export default async function SettingsPage() {
           <label>Postes recherchés<span className="muted">Servent à chercher les offres et à mettre en avant celles dont le titre correspond. Un par ligne.</span>
             <textarea name="titleKeywords" defaultValue={f.titleKeywords.join("\n")} placeholder={"Analyste risques\nContrôle interne\nAuditeur junior"} />
           </label>
+
+          <fieldset className="filter">
+            <legend>🏢 Secteur recherché</legend>
+            <div className="checks">
+              {SECTORS.map((x) => <label key={x.id} className="check"><input type="checkbox" name={`sector_${x.id}`} defaultChecked={f.sectors.includes(x.id)} />{x.emoji} {x.label}</label>)}
+            </div>
+            <span className="muted small">
+              Le scan ajoute automatiquement les sites carrière des plus grandes entreprises de ces secteurs, et l&apos;IA écarte les offres d&apos;autres secteurs. Aucun coché = tous les secteurs.
+            </span>
+            {f.sectors.length > 0 && (
+              <div className="company-list">
+                <span className="muted small">Sites carrière ajoutés au scan :</span>
+                <div className="chips">{companiesFor(f.sectors).map((c) => <span key={c.domain} className="chip brand" title={c.domain}>{c.name}</span>)}</div>
+              </div>
+            )}
+          </fieldset>
 
           <div className="filter-grid">
             <fieldset className="filter">

@@ -6,6 +6,8 @@ export const CONTRACTS: ContractType[] = ["CDI", "CDD", "VIE", "STAGE", "ALTERNA
 export type CareerType = "greenhouse" | "lever" | "smartrecruiters" | "workday";
 export const CAREER_TYPES: CareerType[] = ["greenhouse", "lever", "smartrecruiters", "workday"];
 
+import { companyOfUrl } from "./companies.ts";
+
 /** Langues proposées dans les réglages (forme canonique, en minuscules). */
 export const LANGUAGES = ["français", "anglais", "espagnol", "allemand", "italien", "portugais", "néerlandais", "arabe", "chinois"] as const;
 
@@ -22,6 +24,8 @@ export interface Filters {
   languages: string[];
   /** Années d'expérience exigées au maximum. null = pas de filtre. */
   maxExperienceYears: number | null;
+  /** Secteurs recherchés : ajoutent les sites carrière des grandes entreprises au scan et écartent les autres secteurs. Vide = tous. */
+  sectors: string[];
 }
 
 export interface CareerSite { type: CareerType; id: string; label: string }
@@ -63,6 +67,8 @@ export interface Verdict {
   experienceYearsMin?: number | null;
   /** Raison pour laquelle l'offre est écartée par les filtres langue / expérience, sinon null. */
   filteredReason?: string | null;
+  /** Secteur de l'entreprise détecté par l'IA (id de SECTORS, « autre » ou « inconnu »). */
+  sector?: string;
 }
 
 /** Offre retenue (score ≥ seuil) : envoyée par e-mail et gardée parmi les 10 meilleures du compte. */
@@ -93,6 +99,7 @@ export const DEFAULT_SETTINGS: Settings = {
     scoreThreshold: 70,
     languages: ["français", "anglais"],
     maxExperienceYears: 2,
+    sectors: [],
   },
   sources: { webSearch: true, franceTravail: true, adzuna: true, careers: [] },
   notify: { enabled: true },
@@ -191,6 +198,8 @@ export function sourceName(source: string, url?: string): string {
     [/adzuna/, "Adzuna"], [/greenhouse/, "Greenhouse"], [/lever/, "Lever"], [/smartrecruiters/, "SmartRecruiters"],
     [/myworkdayjobs|workday/, "Workday"], [/teamtailor/, "Teamtailor"],
   ];
+  const company = url ? companyOfUrl(url) : null;
+  if (company) return `${company.name} (site carrière)`;
   let host = "";
   try { host = url ? new URL(url).hostname.replace(/^www\./, "") : ""; } catch {}
   const hay = `${source} ${host}`.toLowerCase();
@@ -229,6 +238,10 @@ export class JobFilter {
     }
     if (f.maxExperienceYears !== null && typeof v.experienceYearsMin === "number" && v.experienceYearsMin > f.maxExperienceYears) {
       return `${v.experienceYearsMin} ans d'expérience demandés`;
+    }
+    // Secteur : seulement s'il a été identifié (« inconnu » n'écarte jamais).
+    if (f.sectors.length && v.sector && v.sector !== "inconnu" && !f.sectors.includes(v.sector)) {
+      return `secteur hors cible (${v.sector === "autre" ? "autre secteur" : v.sector})`;
     }
     return null;
   }

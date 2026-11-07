@@ -3,6 +3,7 @@ import { nameOf, readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest } from "@/lib/supabase.ts";
 import { Matches, Profiles } from "@/lib/repos.ts";
 import { Text, sourceName, type Match, type Settings } from "@/lib/core.ts";
+import { SECTORS, sectorLabel } from "@/lib/companies.ts";
 import { dismissMatch } from "./actions.ts";
 import { Flash, Nav, Ring, ScanPanel } from "./components.tsx";
 
@@ -128,6 +129,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
               {s.filters.locations.slice(0, 3).map((l) => <span key={l} className="chip">📍 {l}</span>)}
             </div>
             <div className="chips">
+              {s.filters.sectors.map((id) => <span key={id} className="chip brand">{SECTORS.find((x) => x.id === id)?.emoji} {sectorLabel(id)}</span>)}
               {s.filters.languages.map((l) => <span key={l} className="chip">🗣️ {l}</span>)}
               {s.filters.maxExperienceYears !== null && <span className="chip">🎓 ≤ {s.filters.maxExperienceYears} an{s.filters.maxExperienceYears > 1 ? "s" : ""} d&apos;exp.</span>}
             </div>
@@ -162,6 +164,7 @@ function MatchCard({ j, rank, threshold }: { j: Match; rank: number; threshold: 
         <h3><a href={url} target="_blank" rel="noopener noreferrer">{j.title}</a></h3>
         <div className="muted">{[j.company, j.location].filter(Boolean).join(" · ")}</div>
         <div className="tags">
+          {v?.sector && v.sector !== "inconnu" && v.sector !== "autre" && <span className="tag">🏢 {sectorLabel(v.sector)}</span>}
           {(j.contract || v?.contractDetected) && <span className="tag">📝 {j.contract ?? v?.contractDetected}</span>}
           {(typeof v?.experienceYearsMin === "number" || v?.experienceRequired) && (
             <span className="tag">🎓 {typeof v?.experienceYearsMin === "number" ? (v.experienceYearsMin === 0 ? "débutant accepté" : `${v.experienceYearsMin} an${v.experienceYearsMin > 1 ? "s" : ""} min.`) : v?.experienceRequired}</span>

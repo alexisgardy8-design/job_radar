@@ -253,3 +253,4 @@ fieldset.filter textarea { min-height: 70px; }
 .avatar.xl { width: 64px; height: 64px; font-size: 26px; box-shadow: var(--shadow-lg); }
 .account-head { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
 .account .chips { margin: 8px 0 0; }
+.company-list { display: grid; gap: 4px; padding-top: 4px; border-top: 1px dashed var(--line); }

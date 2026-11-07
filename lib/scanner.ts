@@ -27,6 +27,7 @@ export interface ScanOptions { deadline?: number; onProgress?: (e: ScanEvent) =>
 /** Nom lisible d'une source pour l'affichage. */
 export function sourceLabel(name: string): string {
   if (name === "web") return "Recherche web (LinkedIn, Indeed, HelloWork…)";
+  if (name === "entreprises") return "Sites carrière des grandes entreprises de ton secteur";
   if (name === "france_travail") return "France Travail";
   if (name === "adzuna") return "Adzuna";
   const [type, id] = name.split(":");

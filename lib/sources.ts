@@ -7,6 +7,7 @@
  */
 import { JobFilter, Text, type CareerSite, type Filters, type RawJob, type Settings } from "./core.ts";
 import { JobAI } from "./ai.ts";
+import { companiesFor, sectorLabel, COMPANIES_FR, type SectorId } from "./companies.ts";
 
 export abstract class JobSource {
   abstract readonly name: string;
@@ -34,6 +35,8 @@ export abstract class JobSource {
     const f = s.filters;
     const list: JobSource[] = [];
     if (s.sources.webSearch && process.env.TAVILY_API_KEY) list.push(new WebSearchSource(f));
+    // Secteurs choisis → sites carrière des grandes entreprises de ces secteurs, ajoutés dynamiquement.
+    if (f.sectors.length && process.env.TAVILY_API_KEY && companiesFor(f.sectors).length) list.push(new CompanyCareersSource(f));
     if (s.sources.franceTravail && process.env.FRANCE_TRAVAIL_CLIENT_ID) list.push(new FranceTravailSource(f));
     if (s.sources.adzuna && process.env.ADZUNA_APP_ID) list.push(new AdzunaSource(f));
     for (const site of s.sources.careers) list.push(CareerSource.create(site, f));
@@ -43,29 +46,33 @@ export abstract class JobSource {
 
 /* ---------------- Recherche web (Tavily, gratuit) ---------------- */
 export class WebSearchSource extends JobSource {
-  readonly name = "web";
+  readonly name: string = "web";
   static readonly DOMAINS = [
     "linkedin.com", "indeed.com", "hellowork.com", "jobteaser.com", "welcometothejungle.com", "apec.fr",
     "francetravail.fr", "wizbii.com", "group.bnpparibas", "careers.societegenerale.com", "jobs.ca-cib.com",
     "groupebpce.com", "myworkdayjobs.com", "greenhouse.io", "lever.co", "smartrecruiters.com", "teamtailor.com",
   ];
 
-  private queries(): string[] {
+  /** Requêtes à envoyer, chacune limitée à une liste de domaines. */
+  /** Fenêtre de publication des résultats web. */
+  protected timeRange = "week";
+
+  protected plan(): { query: string; domains: string[] }[] {
     const { titleKeywords, locations, contractTypes } = this.filters;
     const where = locations[0] ?? "France";
     const contract = contractTypes.includes("CDI") ? "CDI" : contractTypes[0] ?? "";
     const qs = titleKeywords.map((k) => `offre emploi ${contract} "${k}" ${where}`);
     if (contractTypes.includes("CDI")) qs.push(`graduate programme CDI ${where} 2027`);
-    return qs.slice(0, Number(process.env.MAX_SEARCHES_PER_RUN ?? 4));
+    return qs.slice(0, Number(process.env.MAX_SEARCHES_PER_RUN ?? 4)).map((query) => ({ query, domains: WebSearchSource.DOMAINS }));
   }
 
   async fetch(): Promise<RawJob[]> {
     const hits = new Map<string, { title: string; url: string; content: string; published_date?: string }>();
-    for (const query of this.queries()) {
+    for (const { query, domains } of this.plan()) {
       const res = await fetch("https://api.tavily.com/search", {
         method: "POST",
         headers: { Authorization: `Bearer ${process.env.TAVILY_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ query, search_depth: "basic", time_range: "week", max_results: 15, include_domains: WebSearchSource.DOMAINS }),
+        body: JSON.stringify({ query, search_depth: "basic", time_range: this.timeRange, max_results: 15, include_domains: domains }),
         signal: AbortSignal.timeout(30_000),
       });
       if (res.status === 432 || res.status === 433) throw new Error("quota Tavily gratuit atteint ce mois-ci");
@@ -106,6 +113,34 @@ export class WebSearchSource extends JobSource {
       const li = u.pathname.match(/\/jobs\/view\/(?:[^/]*-)?(\d{6,})/);
       return u.hostname.endsWith("linkedin.com") && li ? `linkedin:${li[1]}` : u.toString();
     } catch { return raw; }
+  }
+}
+
+/* ---------------- Sites carrière des grandes entreprises du secteur (Tavily) ---------------- */
+/**
+ * Pour chaque secteur choisi, cherche les offres sur les sites carrière des plus grandes entreprises françaises
+ * du secteur (ex. banque/assurance → BNP Paribas, CA-CIB, Société Générale, BPCE, AXA, Generali…).
+ * Une à deux requêtes par secteur, dans la limite de MAX_COMPANY_SEARCHES (quota Tavily partagé).
+ */
+export class CompanyCareersSource extends WebSearchSource {
+  readonly name = "entreprises";
+  // Les sites carrière sont moins vite indexés que les agrégateurs : on regarde le dernier mois.
+  protected timeRange = "month";
+
+  protected plan(): { query: string; domains: string[] }[] {
+    const { titleKeywords, locations, contractTypes, sectors } = this.filters;
+    const where = locations[0] ?? "France";
+    const contract = contractTypes.includes("CDI") ? "CDI" : contractTypes[0] ?? "";
+    const terms = titleKeywords.length ? titleKeywords : ["offre"];
+    const max = Number(process.env.MAX_COMPANY_SEARCHES ?? 3);
+    const perSector = Math.max(1, Math.floor(max / Math.max(1, sectors.length)));
+    const plan: { query: string; domains: string[] }[] = [];
+    for (const sector of sectors) {
+      const domains = (COMPANIES_FR[sector as SectorId] ?? []).map((c) => c.domain);
+      if (!domains.length) continue;
+      for (const k of terms.slice(0, perSector)) plan.push({ query: `offre emploi ${contract} ${k} ${where} ${sectorLabel(sector)}`, domains });
+    }
+    return plan.slice(0, max);
   }
 }
 

@@ -44,6 +44,7 @@ app/
 ## Sources (légales et gratuites)
 
 - **Recherche web avec Tavily** (1 000 recherches/mois offertes, sans carte bancaire). Elle trouve les offres indexées sur LinkedIn, Indeed, HelloWork, JobTeaser, Welcome to the Jungle, APEC et les sites carrière. On interroge le moteur de recherche : ces sites ne sont jamais scrapés.
+- **Sites carrière des grandes entreprises** : quand l'utilisateur choisit un secteur (ex. banque & assurance), le scan ajoute des recherches limitées aux sites carrière des plus grandes entreprises françaises du secteur (BNP Paribas, CA-CIB, Société Générale, BPCE, AXA, Generali…). Catalogue modifiable dans `lib/companies.ts`, `MAX_COMPANY_SEARCHES` requêtes par scan (3 par défaut).
 - **France Travail** et **Adzuna** : API publiques gratuites.
 - **Sites carrière** : API publiques Greenhouse, Lever, SmartRecruiters et Workday.
 - **Alertes e-mail** (facultatif) : un script Gmail transmet tes alertes LinkedIn, Indeed, etc.
