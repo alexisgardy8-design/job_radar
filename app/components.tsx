@@ -9,7 +9,7 @@ import { logout } from "./actions.ts";
 
 /* ---------------- Navigation ---------------- */
 
-export function Nav({ active, email }: { active: "offres" | "reglages"; email: string }) {
+export function Nav({ active, email, name }: { active: "offres" | "reglages"; email: string; name?: string }) {
   return (
     <header className="topbar">
       <Link href="/" className="brand"><span className="brand-dot" />Job Radar</Link>
@@ -18,7 +18,10 @@ export function Nav({ active, email }: { active: "offres" | "reglages"; email: s
         <Link href="/settings" className={active === "reglages" ? "active" : ""}>⚙️ Profil & réglages</Link>
       </nav>
       <div className="me">
-        <span className="avatar" title={email}>{email.slice(0, 1).toUpperCase()}</span>
+        <Link href="/settings#compte" className="me-link" title={email}>
+          <span className="avatar">{(name || email).slice(0, 1).toUpperCase()}</span>
+          <span className="me-name">{name || email}</span>
+        </Link>
         <form action={logout}><button className="btn ghost small" type="submit">Déconnexion</button></form>
       </div>
     </header>

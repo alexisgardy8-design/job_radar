@@ -12,6 +12,19 @@ export interface AppUser {
   email: string;
   /** Id du facteur TOTP vérifié, ou null si la 2FA n'est pas active. */
   totpFactorId: string | null;
+  /** Nom affiché choisi par l'utilisateur (métadonnées Supabase Auth), ou null. */
+  displayName: string | null;
+  /** Nouvelle adresse en attente de confirmation, ou null. */
+  pendingEmail: string | null;
+  createdAt: string;
+  lastSignInAt: string | null;
+}
+
+/** Nom à afficher : celui choisi, sinon le début de l'adresse e-mail. */
+export function nameOf(u: AppUser): string {
+  if (u.displayName) return u.displayName;
+  const n = u.email.split("@")[0].split(/[._-]/)[0];
+  return n.charAt(0).toUpperCase() + n.slice(1);
 }
 
 export type AuthState = { status: "anonymous" } | { status: "mfa_required"; user: AppUser } | { status: "ok"; user: AppUser };
@@ -22,7 +35,16 @@ export const authState = cache(async (): Promise<AuthState> => {
   const { data } = await sb.auth.getUser();
   if (!data.user?.email) return { status: "anonymous" };
   const factor = data.user.factors?.find((f) => f.factor_type === "totp" && f.status === "verified");
-  const user: AppUser = { id: data.user.id, email: data.user.email, totpFactorId: factor?.id ?? null };
+  const meta = data.user.user_metadata as { display_name?: unknown } | undefined;
+  const user: AppUser = {
+    id: data.user.id,
+    email: data.user.email,
+    totpFactorId: factor?.id ?? null,
+    displayName: typeof meta?.display_name === "string" && meta.display_name.trim() ? meta.display_name.trim().slice(0, 50) : null,
+    pendingEmail: data.user.new_email ?? null,
+    createdAt: data.user.created_at,
+    lastSignInAt: data.user.last_sign_in_at ?? null,
+  };
   const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
   return aal?.nextLevel === "aal2" && aal.currentLevel !== "aal2" ? { status: "mfa_required", user } : { status: "ok", user };
 });

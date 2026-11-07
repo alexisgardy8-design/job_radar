@@ -153,6 +153,29 @@ export async function changePassword(fd: FormData) {
   await go(SET, "Mot de passe changé, tes autres sessions sont déconnectées.", "ok");
 }
 
+/* =================== Mon compte =================== */
+
+export async function updateDisplayName(fd: FormData) {
+  await requireUser();
+  // Nom affiché seulement : sans caractères de contrôle, 50 caractères max. Jamais utilisé pour une autorisation.
+  const name = field(fd, "displayName").replace(/[\u0000-\u001f\u007f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 50);
+  const { error } = await (await forRequest()).auth.updateUser({ data: { display_name: name || null } });
+  if (error) await go(SET, error.message);
+  await go(`${SET}#compte`, name ? `C'est noté, ${name} !` : "Nom affiché retiré.", "ok");
+}
+
+export async function changeEmail(fd: FormData) {
+  const user = await requireUser();
+  const next = field(fd, "email").trim().toLowerCase();
+  if (!Text.isEmail(next)) await go(`${SET}#compte`, "Adresse e-mail invalide.");
+  if (next === user.email) await go(`${SET}#compte`, "C'est déjà ton adresse actuelle.");
+  if (!(await passwordOk(user.email, field(fd, "password")))) await go(`${SET}#compte`, "Mot de passe incorrect.");
+  if (!(await Private.emailAllowed(next))) await go(`${SET}#compte`, "Cette adresse ne fait pas partie des adresses autorisées. Demande à l'administrateur de l'ajouter.");
+  const { error } = await (await forRequest()).auth.updateUser({ email: next }, { emailRedirectTo: `${await siteUrl()}/auth/confirm?next=/settings` });
+  if (error) await go(`${SET}#compte`, /already|registered|exists/i.test(error.message) ? "Cette adresse est déjà utilisée par un autre compte." : error.message);
+  await go(`${SET}#compte`, `Lien de confirmation envoyé à ${next}. Ton adresse changera une fois le lien cliqué (Supabase peut aussi demander une confirmation sur l'ancienne adresse).`, "ok");
+}
+
 export async function revokeOtherSessions() {
   await requireUser();
   await (await forRequest()).auth.signOut({ scope: "others" });

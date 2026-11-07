@@ -1,4 +1,4 @@
-import { readFlash, requireUser } from "@/lib/auth.ts";
+import { nameOf, readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest, supabaseAnonKey, supabaseUrl } from "@/lib/supabase.ts";
 import { Private, Profiles } from "@/lib/repos.ts";
 import { CONTRACTS, LANGUAGES } from "@/lib/core.ts";
@@ -6,12 +6,14 @@ import { Mailer } from "@/lib/mailer.ts";
 import { Flash, Nav, PendingSteps, SubmitButton } from "../components.tsx";
 import { MfaSetup } from "./mfa-setup.tsx";
 import {
-  changePassword, deleteAccount, disableMfa, newIngestToken, newRecoveryCodes,
+  changeEmail, changePassword, deleteAccount, updateDisplayName, disableMfa, newIngestToken, newRecoveryCodes,
   revokeOtherSessions, saveSettings, sendTestEmail, uploadCv,
 } from "../actions.ts";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
+
+const fmt = (d: string) => new Date(d).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
 
 export default async function SettingsPage() {
   const user = await requireUser();
@@ -22,13 +24,46 @@ export default async function SettingsPage() {
 
   return (
     <main className="wrap">
-      <Nav active="reglages" email={user.email} />
+      <Nav active="reglages" email={user.email} name={nameOf(user)} />
       <Flash flash={flash} />
 
       <div className="page-head">
         <h1>Profil & réglages</h1>
         <p className="muted">Ton CV et tes critères guident l&apos;IA : plus ils sont précis, meilleurs sont les matchs.</p>
       </div>
+
+      <section className="card account" id="compte">
+        <div className="account-head">
+          <span className="avatar xl">{nameOf(user).slice(0, 1).toUpperCase()}</span>
+          <div>
+            <h2 style={{ margin: 0 }}>{nameOf(user)}</h2>
+            <p className="muted" style={{ margin: "2px 0 0" }}>{user.email}</p>
+            <div className="chips">
+              <span className="chip">📅 Membre depuis le {fmt(user.createdAt)}</span>
+              {user.lastSignInAt && <span className="chip">🕑 Dernière connexion le {fmt(user.lastSignInAt)}</span>}
+              <span className={`chip ${user.totpFactorId ? "ok" : "bad"}`}>{user.totpFactorId ? "🔐 2FA active" : "🔓 2FA inactive"}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="row" style={{ alignItems: "start" }}>
+          <form action={updateDisplayName} className="stack">
+            <label>👤 Nom affiché<span className="muted">Utilisé dans l&apos;interface. Laisse vide pour utiliser ton adresse.</span>
+              <input type="text" name="displayName" defaultValue={user.displayName ?? ""} maxLength={50} placeholder="Alexis" autoComplete="nickname" />
+            </label>
+            <div><SubmitButton className="btn" pendingText="Enregistrement…">Enregistrer le nom</SubmitButton></div>
+          </form>
+
+          <form action={changeEmail} className="stack">
+            <label>✉️ Adresse e-mail<span className="muted">Seules les adresses autorisées sont acceptées. Un lien de confirmation sera envoyé.</span>
+              <input type="email" name="email" defaultValue={user.email} required autoComplete="email" />
+            </label>
+            {user.pendingEmail && <p className="pill warn" style={{ margin: 0 }}>⏳ En attente de confirmation : {user.pendingEmail}</p>}
+            <label>Mot de passe actuel<input type="password" name="password" required autoComplete="current-password" /></label>
+            <div><SubmitButton className="btn" pendingText="Envoi…">Changer d&apos;adresse</SubmitButton></div>
+          </form>
+        </div>
+      </section>
 
       <section className="card" id="cv">
         <h2><span className="step-num">1</span> 📄 Ton CV</h2>

@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
     await setFlash("err", "Lien invalide ou expiré. Recommence la démarche.");
     redirect("/login");
   }
+  if (type === "email_change") await setFlash("ok", "Adresse e-mail mise à jour.");
   if (type === "signup" || type === "email") await setFlash("ok", "Adresse confirmée. Commence par importer ton CV, puis active la double authentification.");
   redirect(type === "recovery" ? "/reset" : next);
 }

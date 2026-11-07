@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { readFlash, requireUser } from "@/lib/auth.ts";
+import { nameOf, readFlash, requireUser } from "@/lib/auth.ts";
 import { forRequest } from "@/lib/supabase.ts";
 import { Matches, Profiles } from "@/lib/repos.ts";
 import { Text, sourceName, type Match, type Settings } from "@/lib/core.ts";
@@ -36,17 +36,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ v
   const strength = steps.reduce((n, x) => n + (x.done ? x.points : 0), 0);
   const next = steps.find((x) => !x.done);
   const best = matches[0]?.score ?? null;
-  const name = user.email.split("@")[0].split(/[._-]/)[0];
+  const name = nameOf(user);
 
   return (
     <main className="wrap">
-      <Nav active="offres" email={user.email} />
+      <Nav active="offres" email={user.email} name={name} />
       <Flash flash={flash} />
 
       <section className="hero">
         <div className="hero-text">
           <p className="eyebrow">Ton radar à offres</p>
-          <h1>Salut {name.charAt(0).toUpperCase() + name.slice(1)} 👋</h1>
+          <h1>Salut {name} 👋</h1>
           <p className="hero-sub">
             {matches.length
               ? <>Tu as <b>{matches.length} match{matches.length > 1 ? "s" : ""}</b> au-dessus de {threshold}{best !== null ? <>, le meilleur à <b>{best}/100</b></> : null}.</>

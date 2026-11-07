@@ -244,3 +244,12 @@ fieldset.filter textarea { min-height: 70px; }
 .job.dim:hover { opacity: 1; }
 .reveal { display: flex; justify-content: center; margin: 8px 0 18px; }
 .pill.warn { background: var(--mid-soft); color: var(--mid); }
+
+/* ---------- Mon compte ---------- */
+.me-link { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 700; font-size: 14px; }
+.me-link:hover { text-decoration: none; }
+.me-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) { .me-name { display: none; } }
+.avatar.xl { width: 64px; height: 64px; font-size: 26px; box-shadow: var(--shadow-lg); }
+.account-head { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+.account .chips { margin: 8px 0 0; }

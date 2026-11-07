@@ -124,6 +124,13 @@ export class Private {
     return { hasIngestToken: !!row?.ingest_token_hash, recoveryLeft: row?.recovery_codes.length ?? 0 };
   }
 
+  /** Vrai si l'adresse figure dans signup_allowlist (même règle que le trigger d'inscription). */
+  static async emailAllowed(email: string): Promise<boolean> {
+    const rows = check(await admin().from("signup_allowlist").select("pattern"), "adresses autorisées") as { pattern: string }[];
+    const e = email.toLowerCase();
+    return rows.some(({ pattern: p }) => p === "*" || p === e || (p.startsWith("@") && e.endsWith(p)));
+  }
+
   /* --- Jeton du script Gmail --- */
   static async newIngestToken(userId: string): Promise<string> {
     const token = randomBytes(32).toString("base64url");
