@@ -42,6 +42,7 @@ label .muted { font-weight: 400; }
 input[type=text], input[type=password], input[type=email], input[type=date], input[type=number], textarea, select {
   font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); width: 100%; }
 textarea { min-height: 80px; resize: vertical; }
+.checks { display: flex; gap: 14px; flex-wrap: wrap; }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
 .check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
 .flash { padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); margin-bottom: 12px; }

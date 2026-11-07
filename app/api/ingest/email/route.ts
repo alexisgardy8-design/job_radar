@@ -1,53 +1,35 @@
-/**
- * Réception des alertes e-mail (LinkedIn, Indeed, HelloWork, JobTeaser, APEC, WTTJ…),
- * envoyées par le script Google Apps Script fourni (scripts/gmail-forwarder.gs).
- * Corps attendu : { from, subject, body } — protégé par INGEST_SECRET en Bearer.
- */
-import { checkBearer } from "@/lib/auth.ts";
-import { getSettings } from "@/lib/db.ts";
-import { extractJobsFromEmail } from "@/lib/ai.ts";
-import { insertJobs, scoreAndNotify } from "@/lib/scan.ts";
-import { canonicalUrl } from "@/lib/sources/websearch.ts";
-import { guessContract } from "@/lib/text.ts";
-import type { RawJob } from "@/lib/types.ts";
+/** Alertes e-mail transmises par le script Gmail d'un utilisateur, authentifié par son jeton personnel. */
+import { Database } from "@/lib/database.ts";
+import { Crypto } from "@/lib/security.ts";
+import { Text, type RawJob } from "@/lib/core.ts";
+import { JobAI } from "@/lib/ai.ts";
+import { WebSearchSource } from "@/lib/sources.ts";
+import { Scanner } from "@/lib/scanner.ts";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-function senderSource(from: string): string {
-  const f = from.toLowerCase();
-  for (const s of ["linkedin", "indeed", "hellowork", "jobteaser", "apec", "welcometothejungle", "francetravail", "wizbii"]) {
-    if (f.includes(s)) return s;
-  }
-  return "autre";
-}
+const SENDERS = ["linkedin", "indeed", "hellowork", "jobteaser", "apec", "welcometothejungle", "francetravail", "wizbii"];
 
 export async function POST(req: Request) {
-  if (!checkBearer(req.headers.get("authorization"), process.env.INGEST_SECRET)) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-  const { from = "", subject = "", body = "" } = (await req.json()) as { from?: string; subject?: string; body?: string };
+  const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (token.length < 40) return new Response("Unauthorized", { status: 401 });
+  const q = await Database.get();
+  const user = ((await q`SELECT id FROM users WHERE ingest_token_hash = ${Crypto.sha256(token)}`) as { id: number }[])[0];
+  if (!user) return new Response("Unauthorized", { status: 401 });
+
+  const { from = "", subject = "", body = "" } = (await req.json()) as Record<string, string>;
   if (!body) return Response.json({ error: "body vide" }, { status: 400 });
+  const sender = SENDERS.find((s) => from.toLowerCase().includes(s)) ?? "autre";
 
-  const extracted = await extractJobsFromEmail(subject, from, body);
-  const src = `email:${senderSource(from)}`;
-  const jobs: RawJob[] = extracted
-    .filter((j) => /^https?:\/\//.test(j.url))
-    .map((j) => ({
-      source: src,
-      externalId: canonicalUrl(j.url),
-      title: j.title,
-      company: j.company,
-      location: j.location,
-      contract: guessContract(j.title),
-      url: j.url,
-      description: j.snippet,
-      postedAt: new Date().toISOString(),
-    }));
+  const extracted = await JobAI.extractJobs("un e-mail d'alerte emploi", [`De : ${from.slice(0, 200)}\nObjet : ${subject.slice(0, 300)}\n\n${body.slice(0, 60_000)}`]);
+  const jobs: RawJob[] = extracted.map((j) => ({
+    source: `email:${sender}`, externalId: WebSearchSource.canonical(j.url), title: j.title, company: j.company,
+    location: j.location, contract: Text.contract(j.contract) ?? Text.contract(j.title), url: j.url, description: null, postedAt: new Date().toISOString(),
+  }));
 
-  const s = await getSettings();
-  const inserted = await insertJobs(jobs, s);
-  // Notification immédiate pour les alertes : c'est tout l'intérêt de la source e-mail.
-  const res = inserted > 0 ? await scoreAndNotify(s, 20) : { scored: 0, notified: 0, errors: [] };
+  const scanner = await Scanner.forUser(user.id);
+  const inserted = await scanner.ingest(jobs);
+  const res = inserted ? await scanner.scoreAndSend(20) : { scored: 0, sent: 0, errors: [] };
   return Response.json({ extracted: jobs.length, inserted, ...res });
 }

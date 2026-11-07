@@ -1,97 +1,62 @@
 # Job Radar
 
-Agent personnel de veille d'offres d'emploi : il collecte les nouvelles offres chaque jour, les trie selon tes filtres, les note par rapport à ton CV avec une IA, et t'envoie les meilleures par e-mail et/ou Telegram.
+Veille d'offres d'emploi multi-comptes. Chaque utilisateur crée son compte (e-mail, mot de passe et 2FA facultative), importe son CV et règle ses filtres. Chaque matin, l'application collecte les nouvelles offres, l'IA les note par rapport à son CV, et il reçoit par e-mail les meilleures, avec le lien pour postuler.
 
-## Comment il trouve les offres (uniquement par des moyens légaux)
-
-| Source | Ce qu'elle couvre | Coût |
-|---|---|---|
-| **Recherche web** (Perplexity via Vercel AI Gateway) | Offres indexées par les moteurs de recherche sur LinkedIn, Indeed, HelloWork, JobTeaser, Welcome to the Jungle, APEC, les sites carrière des banques… On interroge le moteur, sans visiter ces sites. | ≈ 0,005 $ par recherche, soit 2 à 4 € par mois |
-| **France Travail** (API officielle) | Offres France Travail et celles de ses partenaires | Gratuit |
-| **Adzuna** (API) | Agrégateur d'offres françaises | Gratuit |
-| **Sites carrière** | Greenhouse, Lever, SmartRecruiters, Workday : les API publiques qu'utilisent les pages carrière elles-mêmes | Gratuit |
-| **Sitemaps** | N'importe quel site carrière qui publie un sitemap avec des données `JobPosting`. Le robots.txt est respecté. | Gratuit |
-| **Alertes e-mail** (facultatif) | Tes propres alertes LinkedIn, Indeed, HelloWork, JobTeaser… transmises par un script dans ton Gmail | Gratuit |
-
-LinkedIn, Indeed et JobTeaser ne sont jamais scrapés directement : leurs conditions d'utilisation l'interdisent.
-
-Le scoring IA (Claude Haiku via AI Gateway) coûte quelques centimes par jour. AI Gateway offre 5 $ de crédit gratuit par mois, ce qui suffit en général à couvrir le tout.
-
-## Fonctionnement
+## Structure
 
 ```
-Cron quotidien (06:00 UTC) ─┬─ recherche web ─┐
-                            ├─ France Travail ┤
-                            ├─ Adzuna ────────┼─► dédoublonnage ─► tri gratuit (titre, contrat, lieu)
-                            ├─ sites carrière ┤                        │
-Script Gmail (toutes les h) ┴─ alertes e-mail ┘                        ▼
-                                                     IA : score /100 vs ton CV, points forts, écarts, date de début
-                                                                       │
-                                                       score ≥ seuil ─► e-mail / Telegram + tableau de bord
+lib/
+  core.ts       Types, réglages par défaut, utilitaires texte (Text), filtre d'offres (JobFilter)
+  security.ts   Crypto (scrypt, AES-GCM, HMAC) · Totp (RFC 6238) · Auth (comptes, sessions, anti-bruteforce)
+  database.ts   Database (Neon, schéma auto-créé) · SettingsRepo · JobsRepo
+  sources.ts    JobSource (abstraite) → WebSearch, FranceTravail, Adzuna, Greenhouse, Lever, SmartRecruiters, Workday
+  ai.ts         JobAI : lecture du CV, scoring, extraction d'offres
+  mailer.ts     Mailer : e-mail personnalisé (SMTP)
+  scanner.ts    Scanner : collecte → tri → scoring → e-mail, pour un compte
+app/
+  actions.ts    Toutes les actions serveur (compte, sécurité, CV, réglages, scan)
+  components.tsx  Nav, Flash, SubmitButton
+  login/        Connexion · inscription (?mode=signup) · 2FA (?mode=2fa)
+  settings/     CV, filtres, sources, e-mail, sécurité du compte
+  page.tsx      Tableau des offres
+  api/cron/scan        Scan quotidien de tous les comptes (Vercel Cron)
+  api/ingest/email     Alertes e-mail transmises par le script Gmail (facultatif)
 ```
 
-## Déploiement (≈ 20 min)
+## Sources (légales et gratuites)
 
-### 1. Mettre le code sur GitHub et créer le projet Vercel
-```bash
-cd job-radar
-npm install
-git init && git add -A && git commit -m "Job Radar"
-# crée un repo privé sur GitHub, pousse le code, puis sur vercel.com : Add New → Project → importe le repo
-```
-Tu peux aussi déployer directement avec `npx vercel` depuis le dossier.
+- **Recherche web avec Tavily** (1 000 recherches/mois offertes, sans carte bancaire). Elle trouve les offres indexées sur LinkedIn, Indeed, HelloWork, JobTeaser, Welcome to the Jungle, APEC et les sites carrière. On interroge le moteur de recherche : ces sites ne sont jamais scrapés.
+- **France Travail** et **Adzuna** : API publiques gratuites.
+- **Sites carrière** : API publiques Greenhouse, Lever, SmartRecruiters et Workday.
+- **Alertes e-mail** (facultatif) : un script Gmail transmet tes alertes LinkedIn, Indeed, etc.
 
-### 2. Base de données
-Dans le projet Vercel : **Storage → Create → Neon (Postgres)**. `DATABASE_URL` est ajoutée automatiquement.
-Ouvre ensuite la console SQL de Neon et colle le contenu de `db/schema.sql`.
-
-### 3. IA
-Dans le dashboard Vercel, **AI Gateway** s'active depuis l'onglet du même nom. Une fois déployé, l'authentification se fait seule (OIDC). Pour tester en local uniquement, crée une clé et mets-la dans `AI_GATEWAY_API_KEY`.
-
-### 4. Variables d'environnement (Settings → Environment Variables)
-Pars de `.env.example`. Le minimum :
-- `APP_PASSWORD` : ton mot de passe de connexion (long)
-- `SESSION_SECRET` et `CRON_SECRET` : génère-les avec `openssl rand -hex 32`
-- au moins un canal de notification :
-  - **Telegram** : crée un bot avec @BotFather → `TELEGRAM_BOT_TOKEN`. Envoie un message à ton bot, puis ouvre `https://api.telegram.org/bot<TOKEN>/getUpdates` pour récupérer ton `chat.id`, que tu colles ensuite dans les Réglages du site.
-  - **E-mail** : clé Resend → `RESEND_API_KEY`
-
-Facultatif : `FRANCE_TRAVAIL_CLIENT_ID/SECRET` (francetravail.io → créer une application → s'abonner à « Offres d'emploi v2 »), `ADZUNA_APP_ID/KEY` (developer.adzuna.com), `INGEST_SECRET` (alertes e-mail).
-
-Redéploie après avoir ajouté les variables.
-
-### 5. Premier lancement
-1. Ouvre le site et connecte-toi.
-2. **Réglages** : importe ton CV (PDF), puis règle tes mots-clés, contrats, lieux, date de début et seuil.
-3. Clique sur **Envoyer une notification de test**.
-4. Reviens sur **Offres** et clique sur **Scanner maintenant**.
-
-Ensuite, le cron tourne tout seul chaque jour. Le plan gratuit Vercel n'autorise qu'un cron par jour. Avec le plan Pro, tu peux passer `vercel.json` à `0 */4 * * *` pour scanner toutes les 4 heures.
-
-### 6. (Facultatif) Alertes e-mail LinkedIn / Indeed / JobTeaser
-Suis les instructions en tête de `scripts/gmail-forwarder.gs`. Le script tourne dans **ton** compte Google, lit uniquement les mails portant le libellé `job-alerts`, et t'envoie une notification dans l'heure dès qu'une alerte contient une offre qui matche.
-
-## Ajouter des sites carrière
-Dans Réglages → Sites carrière, mets une ligne par site :
-```
-workday | https://<entreprise>.wd3.myworkdayjobs.com/fr-FR/<Site> | Nom
-greenhouse | <board-token> | Nom          # boards.greenhouse.io/<board-token>
-lever | <site> | Nom                      # jobs.lever.co/<site>  (eu:<site> pour jobs.eu.lever.co)
-smartrecruiters | <CompanyId> | Nom       # jobs.smartrecruiters.com/<CompanyId>
-sitemap | https://site/sitemap.xml | Nom | /job/
-```
-Pour trouver le bon identifiant, ouvre la page carrière de l'entreprise et regarde l'URL des offres.
+L'IA (lecture du CV, scoring) passe par Vercel AI Gateway, qui offre 5 $ de crédit chaque mois.
 
 ## Sécurité
-- Un seul utilisateur. Le cookie de session est httpOnly, signé HMAC et valable 30 jours. Chaque action serveur revérifie la session.
-- Le cron et l'ingestion e-mail sont protégés par leur propre secret, comparé en temps constant.
-- Le PDF du CV n'est pas stocké : seul le texte extrait est conservé, dans ta base Neon.
-- Le site est en `noindex`.
+
+- Les mots de passe sont hachés avec scrypt et un sel aléatoire. Les comparaisons se font en temps constant, et une réponse identique est renvoyée que l'e-mail existe ou non.
+- Les sessions utilisent un jeton aléatoire de 256 bits, stocké dans un cookie httpOnly. Seul son SHA-256 est enregistré en base, et chaque session est révocable.
+- La 2FA repose sur TOTP. Le secret est chiffré en AES-256-GCM, un même code ne peut pas être réutilisé, et l'utilisateur dispose de 8 codes de secours à usage unique (stockés hachés).
+- Anti-bruteforce : 5 échecs en 15 minutes bloquent l'e-mail concerné, 30 échecs bloquent l'IP.
+- Toutes les requêtes SQL sont paramétrées, et chaque requête est limitée aux données du compte connecté.
+- Les inscriptions sont réservées aux adresses listées dans `ALLOWED_SIGNUP_EMAILS`.
+
+## Configuration
+
+Copie `.env.example` en `.env` pour travailler en local (git ignore ce fichier). En production, mets les mêmes clés dans Vercel → Settings → Environment Variables.
+
+1. **Base de données** : Vercel → Storage → Create Database → Neon. Les tables se créent automatiquement.
+2. **Recherche web** : crée une clé gratuite sur https://app.tavily.com et mets-la dans `TAVILY_API_KEY`.
+3. **E-mails** : sur ton compte Gmail, active la validation en 2 étapes, puis crée un mot de passe d'application sur https://myaccount.google.com/apppasswords. Mets ton adresse dans `SMTP_USER` et ce mot de passe dans `SMTP_PASS`.
+4. **Comptes autorisés** : renseigne `ALLOWED_SIGNUP_EMAILS`, par exemple `moi@gmail.com,ami@gmail.com` ou un domaine comme `@edu.devinci.fr`.
+5. **Facultatif** : `FRANCE_TRAVAIL_CLIENT_ID` / `FRANCE_TRAVAIL_CLIENT_SECRET` et `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`.
+
+Le scan automatique tourne chaque jour à 06:00 UTC (`vercel.json`). Sur la page des offres, chacun peut aussi lancer un scan manuel, au maximum un toutes les 10 minutes.
 
 ## Développement
+
 ```bash
-cp .env.example .env.local   # remplis-le
+npm install
 npm run dev
-npm test                     # tests de la logique (filtres, parsing des sources, robots.txt, JSON-LD)
 npm run typecheck
 ```

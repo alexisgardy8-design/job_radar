@@ -1,7 +1,22 @@
+# --- Secrets : ne JAMAIS commiter ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Dépendances / build ---
 node_modules
 .next
-.env*.local
-.env
+out
+build
 .vercel
-next-env.d.ts
 *.tsbuildinfo
+next-env.d.ts
+
+# --- Divers ---
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+.idea
+.vscode
