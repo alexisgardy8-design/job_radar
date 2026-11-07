@@ -1,6 +1,9 @@
 /** Envoi des offres par e-mail (SMTP, ex. Gmail + mot de passe d'application : gratuit, ~500 mails/jour). */
 import nodemailer from "nodemailer";
-import { Text, type JobRow } from "./core.ts";
+import { Text, type Match } from "./core.ts";
+
+/** Contenu d'une offre dans l'e-mail. */
+export type MailJob = Pick<Match, "title" | "company" | "location" | "contract" | "url" | "score" | "verdict">;
 
 const esc = (s: string | null | undefined) => (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -27,7 +30,7 @@ export class Mailer {
   }
 
   /** E-mail récapitulatif personnalisé : une carte par offre, avec score, raisons et bouton « Postuler ». */
-  static async sendJobs(to: string, jobs: JobRow[]): Promise<void> {
+  static async sendJobs(to: string, jobs: MailJob[]): Promise<void> {
     if (!jobs.length) return;
     const best = jobs[0];
     const subject = jobs.length === 1
@@ -44,18 +47,17 @@ export class Mailer {
 
   static async sendTest(to: string): Promise<void> {
     await Mailer.sendJobs(to, [{
-      id: 0, source: "test", title: "Offre de test : tes e-mails Job Radar fonctionnent", company: "Job Radar", location: "Paris",
-      contract: "CDI", url: "https://example.com", description: null, posted_at: null, first_seen: new Date().toISOString(),
-      status: "scored", filter_reason: null, score: 99, notified_at: null, dismissed: false,
+      title: "Offre de test : tes e-mails Job Radar fonctionnent", company: "Job Radar", location: "Paris",
+      contract: "CDI", url: "https://example.com", score: 99,
       verdict: { score: 99, summary: "Si tu lis ceci, l'envoi fonctionne.", strengths: ["Configuration SMTP OK"], gaps: [], startDate: null, startDateCompatible: "unknown", experienceRequired: null, contractDetected: "CDI" },
     }]);
   }
 
-  private static html(to: string, jobs: JobRow[]): string {
+  private static html(to: string, jobs: MailJob[]): string {
     const app = Mailer.appUrl;
     const cards = jobs.map((j) => {
       const v = j.verdict;
-      const [bg, fg] = (j.score ?? 0) >= 85 ? ["#e6f4ea", "#1e6b3a"] : ["#eef4e6", "#3d6b1e"];
+      const [bg, fg] = j.score >= 85 ? ["#e6f4ea", "#1e6b3a"] : ["#eef4e6", "#3d6b1e"];
       const meta = [j.company, j.location, j.contract ?? v?.contractDetected, v?.experienceRequired && `exp. ${v.experienceRequired}`, v?.startDate && `début : ${v.startDate}`]
         .filter(Boolean).map(esc).join(" · ");
       return `<tr><td style="padding:0 0 14px"><table role="presentation" width="100%" style="border:1px solid #e6e5e0;border-radius:10px;background:#fff"><tr><td style="padding:16px 18px">
@@ -74,7 +76,7 @@ export class Mailer {
           <div style="font-size:14px;color:#6b6b66">${jobs.length} nouvelle(s) offre(s) correspondant à ton CV, triées par score.</div></td></tr>
         ${cards}
         <tr><td style="font-size:12px;color:#6b6b66;padding-top:8px">Envoyé à ${esc(to)} selon les filtres de ton compte.
-          ${app ? `<a href="${app}" style="color:#2f5d50">Ouvrir Job Radar</a> · <a href="${app}/settings" style="color:#2f5d50">Modifier mes filtres ou me désabonner</a>` : ""}</td></tr>
+          ${app ? `<a href="${app}" style="color:#2f5d50">Ouvrir Job Radar</a> · <a href="${app}/settings" style="color:#2f5d50">Modifier mes filtres ou désactiver les e-mails</a>` : ""}</td></tr>
       </table></td></tr></table></body></html>`;
   }
 }

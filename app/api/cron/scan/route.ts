@@ -1,16 +1,25 @@
-import { Auth } from "@/lib/security.ts";
-import { SettingsRepo } from "@/lib/database.ts";
+import { timingSafeEqual } from "node:crypto";
+import { Profiles } from "@/lib/repos.ts";
 import { Scanner } from "@/lib/scanner.ts";
+import { admin } from "@/lib/supabase.ts";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-/** Vercel Cron (vercel.json) : scanne chaque compte ayant un CV, du moins récemment scanné au plus récent. */
+function authorized(header: string | null): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || !header) return false;
+  const a = Buffer.from(header), b = Buffer.from(`Bearer ${secret}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Vercel Cron (vercel.json) : ménage, puis scan de chaque compte ayant un CV, du moins récemment scanné au plus récent. */
 export async function GET(req: Request) {
-  if (!Auth.bearerOk(req.headers.get("authorization"), process.env.CRON_SECRET)) return new Response("Unauthorized", { status: 401 });
+  if (!authorized(req.headers.get("authorization"))) return new Response("Unauthorized", { status: 401 });
   const started = Date.now();
-  const users = await SettingsRepo.scannableUsers();
-  const report: { user: number; sent?: number; error?: string }[] = [];
+  await admin().rpc("purge_old");
+  const users = await Profiles.scannable();
+  const report: { user: string; sent?: number; error?: string }[] = [];
   for (const id of users) {
     if (Date.now() - started > 240_000) break; // les comptes restants passent en premier au prochain cron
     try {

@@ -21,13 +21,8 @@ export function Nav({ active, email }: { active: "offres" | "reglages"; email: s
   );
 }
 
-export function Flash({ ok, err }: { ok?: string; err?: string }) {
-  return (
-    <>
-      {ok && <div className="flash">{ok}</div>}
-      {err && <div className="flash err">{err}</div>}
-    </>
-  );
+export function Flash({ flash }: { flash: { kind: "ok" | "err"; msg: string } | null }) {
+  return flash ? <div className={`flash${flash.kind === "err" ? " err" : ""}`} style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{flash.msg}</div> : null;
 }
 
 export function SubmitButton({ children, pendingText, className = "btn primary" }: { children: React.ReactNode; pendingText?: string; className?: string }) {

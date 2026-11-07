@@ -24,7 +24,8 @@ export interface Settings {
   cvName: string | null;
   filters: Filters;
   sources: { webSearch: boolean; franceTravail: boolean; adzuna: boolean; careers: CareerSite[] };
-  notify: { enabled: boolean; email: string | null };
+  /** Les e-mails partent uniquement vers l'adresse du compte, vérifiée par Supabase Auth. */
+  notify: { enabled: boolean };
 }
 
 /** Offre normalisée, quelle que soit la source. */
@@ -51,17 +52,19 @@ export interface Verdict {
   contractDetected: string | null;
 }
 
-export interface JobRow extends Omit<RawJob, "externalId" | "contract" | "postedAt"> {
+/** Offre retenue (score ≥ seuil) : envoyée par e-mail et gardée parmi les 10 meilleures du compte. */
+export interface Match {
   id: number;
+  title: string;
+  company: string | null;
+  location: string | null;
   contract: string | null;
-  posted_at: string | null;
-  first_seen: string;
-  status: "pending" | "filtered_out" | "scored" | "error";
-  filter_reason: string | null;
-  score: number | null;
-  verdict: Verdict | null;
-  notified_at: string | null;
-  dismissed: boolean;
+  source: string;
+  url: string;
+  score: number;
+  verdict: Verdict;
+  found_at: string;
+  sent_at: string | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -78,7 +81,7 @@ export const DEFAULT_SETTINGS: Settings = {
     scoreThreshold: 70,
   },
   sources: { webSearch: true, franceTravail: true, adzuna: true, careers: [] },
-  notify: { enabled: true, email: null },
+  notify: { enabled: true },
 };
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", rsquo: "’", eacute: "é", egrave: "è", agrave: "à" };

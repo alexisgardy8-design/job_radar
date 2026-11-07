@@ -1,203 +1,209 @@
 "use server";
-/** Toutes les actions serveur : compte (inscription, connexion, 2FA, sécurité) et application (CV, réglages, scan). */
+/** Actions serveur : compte (Supabase Auth), sécurité, CV, réglages, scan. */
 
-import { cookies } from "next/headers";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { Auth, Crypto, Totp, type User } from "@/lib/security.ts";
-import { Database, JobsRepo, SettingsRepo } from "@/lib/database.ts";
+import { authState, go, passwordOk, requireUser, setFlash } from "@/lib/auth.ts";
+import { admin, forRequest } from "@/lib/supabase.ts";
+import { Matches, Private, Profiles } from "@/lib/repos.ts";
 import { CAREER_TYPES, CONTRACTS, Text, type CareerSite, type CareerType } from "@/lib/core.ts";
 import { JobAI } from "@/lib/ai.ts";
 import { Mailer } from "@/lib/mailer.ts";
 import { Scanner } from "@/lib/scanner.ts";
 
-function go(path: string, msg: string, kind: "err" | "ok" = "err"): never {
-  redirect(`${path}${path.includes("?") ? "&" : "?"}${kind}=${encodeURIComponent(msg)}`);
-}
 const field = (fd: FormData, k: string) => String(fd.get(k) ?? "");
+const SET = "/settings";
 
-async function requirePassword(user: User, fd: FormData, back: string) {
-  if (!(await Crypto.verifyPassword(field(fd, "password"), user.password_hash))) go(back, "Mot de passe incorrect.");
+function passwordProblem(pw: string): string | null {
+  if (pw.length < 10) return "Le mot de passe doit faire au moins 10 caractères.";
+  if (pw.length > 72) return "Mot de passe trop long (72 caractères max.).";
+  if (!/[a-zA-Z]/.test(pw) || !/[^a-zA-Z]/.test(pw)) return "Mélange des lettres et des chiffres ou symboles.";
+  return null;
 }
 
-/* =================== Compte =================== */
+async function siteUrl(): Promise<string> {
+  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, "");
+  const h = await headers();
+  return `${h.get("x-forwarded-proto") ?? "https"}://${h.get("host")}`;
+}
+
+/* =================== Connexion =================== */
 
 export async function signup(fd: FormData) {
   const back = "/login?mode=signup";
   const email = field(fd, "email").trim().toLowerCase();
   const pw = field(fd, "password");
-  if (!Text.isEmail(email)) go(back, "Adresse e-mail invalide.");
-  if (!Auth.signupAllowed(email)) go(back, "Les inscriptions sont réservées : demande à l'administrateur d'autoriser ton e-mail.");
-  const problem = Auth.passwordProblem(pw);
-  if (problem) go(back, problem);
-  if (pw !== field(fd, "password2")) go(back, "Les deux mots de passe ne correspondent pas.");
+  if (!Text.isEmail(email)) await go(back, "Adresse e-mail invalide.");
+  const problem = passwordProblem(pw);
+  if (problem) await go(back, problem);
+  if (pw !== field(fd, "password2")) await go(back, "Les deux mots de passe ne correspondent pas.");
 
-  const q = await Database.get();
-  const rows = (await q`INSERT INTO users (email, password_hash) VALUES (${email}, ${await Crypto.hashPassword(pw)})
-                        ON CONFLICT (email) DO NOTHING RETURNING id`) as { id: number }[];
-  if (!rows[0]) go(back, "Impossible de créer ce compte. Si tu en as déjà un, connecte-toi.");
-  await Auth.startSession(rows[0].id);
-  go("/settings", "Compte créé. Commence par importer ton CV.", "ok");
+  const sb = await forRequest();
+  const { error } = await sb.auth.signUp({ email, password: pw, options: { emailRedirectTo: `${await siteUrl()}/auth/confirm?next=/settings` } });
+  // L'autorisation d'inscription est vérifiée en base (trigger) : on ne distingue pas les cas pour ne rien révéler.
+  if (error && /signup_not_allowed|Database error/i.test(error.message)) await go(back, "Les inscriptions sont réservées : demande à l'administrateur d'autoriser ton e-mail.");
+  if (error && !/already registered/i.test(error.message)) await go(back, error.message);
+  await go("/login", "Si cette adresse peut être inscrite, un e-mail de confirmation vient d'être envoyé. Clique sur le lien pour activer ton compte.", "ok");
 }
 
 export async function login(fd: FormData) {
-  const email = field(fd, "email").trim().toLowerCase();
-  if (await Auth.blocked(email)) go("/login", "Trop de tentatives. Réessaie dans 15 minutes.");
-  const q = await Database.get();
-  const user = ((await q`SELECT * FROM users WHERE email = ${email}`) as User[])[0];
-  // Hash factice si l'e-mail n'existe pas : même temps de réponse, aucun compte révélé.
-  const ok = await Crypto.verifyPassword(field(fd, "password"), user?.password_hash ?? Crypto.DUMMY_HASH);
-  if (!user || !ok) {
-    await Auth.failed(email);
-    go("/login", "E-mail ou mot de passe incorrect.");
+  const sb = await forRequest();
+  const { error } = await sb.auth.signInWithPassword({ email: field(fd, "email").trim().toLowerCase(), password: field(fd, "password") });
+  if (error) {
+    if (/not confirmed/i.test(error.message)) await go("/login", "Confirme d'abord ton adresse e-mail (lien reçu à l'inscription).");
+    if (/rate limit|too many/i.test(error.message)) await go("/login", "Trop de tentatives. Réessaie dans quelques minutes.");
+    await go("/login", "E-mail ou mot de passe incorrect.");
   }
-  if (user.totp_enabled) {
-    await Auth.startMfa(user.id);
-    redirect("/login?mode=2fa");
-  }
-  await Auth.startSession(user.id);
-  redirect("/");
+  const { data: aal } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+  redirect(aal?.nextLevel === "aal2" && aal.currentLevel !== "aal2" ? "/login?mode=2fa" : "/");
 }
 
 export async function verifyMfa(fd: FormData) {
-  const userId = await Auth.mfaUserId();
-  if (!userId) go("/login", "Session expirée, reconnecte-toi.");
-  const q = await Database.get();
-  const user = ((await q`SELECT * FROM users WHERE id = ${userId}`) as User[])[0];
-  if (!user?.totp_enabled || !user.totp_secret_enc) go("/login", "Session expirée, reconnecte-toi.");
-  if (await Auth.blocked(user.email)) go("/login", "Trop de tentatives. Réessaie dans 15 minutes.");
-  const code = field(fd, "code").trim().toLowerCase();
+  const state = await authState();
+  if (state.status === "ok") redirect("/");
+  if (state.status === "anonymous") return go("/login", "Session expirée, reconnecte-toi.");
+  const { user } = state;
+  const code = field(fd, "code").trim();
 
-  const step = Totp.check(Crypto.decrypt(user.totp_secret_enc), code, Number(user.totp_last_step));
-  if (step !== null) {
-    const used = await q`UPDATE users SET totp_last_step = ${step} WHERE id = ${user.id} AND totp_last_step < ${step} RETURNING id`;
-    if ((used as unknown[]).length) {
-      await Auth.startSession(user.id);
-      redirect("/");
-    }
+  if (/^\d{6}$/.test(code.replace(/\s/g, "")) && user.totpFactorId) {
+    const sb = await forRequest();
+    const { error } = await sb.auth.mfa.challengeAndVerify({ factorId: user.totpFactorId, code: code.replace(/\s/g, "") });
+    if (!error) redirect("/");
+    await go("/login?mode=2fa", /rate limit|too many/i.test(error.message) ? "Trop de tentatives. Réessaie dans quelques minutes." : "Code invalide.");
   }
-  const hash = Crypto.sha256(code);
-  if (user.recovery_codes.includes(hash)) {
-    const left = user.recovery_codes.filter((c) => c !== hash);
-    await q`UPDATE users SET recovery_codes = ${JSON.stringify(left)}::jsonb WHERE id = ${user.id}`;
-    await Auth.startSession(user.id);
-    go("/settings", `Connecté avec un code de secours. Il t'en reste ${left.length}.`, "ok");
-  }
-  await Auth.failed(user.email);
-  go("/login?mode=2fa", "Code invalide.");
-}
 
-export async function cancelMfa() {
-  (await cookies()).delete(Auth.MFA_COOKIE);
-  redirect("/login");
+  // Code de secours : désactive la 2FA (Supabase déconnecte alors toutes les sessions), puis reconnexion par mot de passe.
+  const left = await Private.useRecoveryCode(user.id, code);
+  if (left === null) await go("/login?mode=2fa", "Code invalide.");
+  const db = admin();
+  const { data } = await db.auth.admin.mfa.listFactors({ userId: user.id });
+  for (const f of data?.factors ?? []) await db.auth.admin.mfa.deleteFactor({ id: f.id, userId: user.id });
+  await Private.clearRecoveryCodes(user.id);
+  await (await forRequest()).auth.signOut({ scope: "local" });
+  await go("/login", "Code de secours accepté : la double authentification est désactivée. Reconnecte-toi avec ton mot de passe, puis réactive-la.", "ok");
 }
 
 export async function logout() {
-  await Auth.endSession();
+  await (await forRequest()).auth.signOut({ scope: "local" });
   redirect("/login");
 }
 
-/* =================== Sécurité =================== */
-const SET = "/settings";
-
-export async function startTotp() {
-  const user = await Auth.require();
-  await (await Database.get())`UPDATE users SET totp_pending_enc = ${Crypto.encrypt(Totp.newSecret())} WHERE id = ${user.id}`;
-  redirect(SET);
+export async function forgotPassword(fd: FormData) {
+  const email = field(fd, "email").trim().toLowerCase();
+  if (Text.isEmail(email)) {
+    await (await forRequest()).auth.resetPasswordForEmail(email, { redirectTo: `${await siteUrl()}/auth/confirm?next=/reset` });
+  }
+  await go("/login", "Si un compte existe pour cette adresse, un lien de réinitialisation vient d'être envoyé.", "ok");
 }
 
-export async function confirmTotp(fd: FormData) {
-  const user = await Auth.require();
-  if (!user.totp_pending_enc) go(SET, "Recommence l'activation.");
-  const secret = Crypto.decrypt(user.totp_pending_enc);
-  const step = Totp.check(secret, field(fd, "code"), 0);
-  if (step === null) go(SET, "Code incorrect : vérifie l'heure de ton téléphone et réessaie.");
-  const codes = Totp.recoveryCodes();
-  await (await Database.get())`
-    UPDATE users SET totp_secret_enc = ${Crypto.encrypt(secret)}, totp_pending_enc = NULL, totp_enabled = true,
-      totp_last_step = ${step}, recovery_codes = ${JSON.stringify(codes.map(Crypto.sha256))}::jsonb WHERE id = ${user.id}`;
-  await Auth.flashSecret("jr_codes", codes.join(" "));
-  go(SET, "Double authentification activée. Note tes codes de secours.", "ok");
+/** Nouveau mot de passe après le lien reçu par e-mail (session de récupération, 2FA comprise si active). */
+export async function resetPassword(fd: FormData) {
+  await requireUser();
+  const pw = field(fd, "password");
+  const problem = passwordProblem(pw);
+  if (problem) await go("/reset", problem);
+  if (pw !== field(fd, "password2")) await go("/reset", "Les deux mots de passe ne correspondent pas.");
+  const sb = await forRequest();
+  const { error } = await sb.auth.updateUser({ password: pw });
+  if (error) await go("/reset", error.message);
+  await sb.auth.signOut({ scope: "others" });
+  await go(SET, "Mot de passe modifié, tes autres sessions sont déconnectées.", "ok");
 }
 
-export async function disableTotp(fd: FormData) {
-  const user = await Auth.require();
-  await requirePassword(user, fd, SET);
-  await (await Database.get())`UPDATE users SET totp_enabled = false, totp_secret_enc = NULL, totp_pending_enc = NULL, recovery_codes = '[]'::jsonb WHERE id = ${user.id}`;
-  go(SET, "Double authentification désactivée.", "ok");
+/* =================== Sécurité du compte =================== */
+
+/** Appelée par le composant d'activation, une fois le facteur TOTP vérifié côté navigateur. */
+export async function finishMfaSetup() {
+  const user = await requireUser();
+  if (!user.totpFactorId) await go(SET, "La double authentification n'est pas active.");
+  const codes = await Private.newRecoveryCodes(user.id);
+  await (await forRequest()).auth.signOut({ scope: "others" }); // les sessions ouvertes sans 2FA sont fermées
+  await setFlash("ok", `Double authentification activée. Codes de secours, à noter maintenant (affichés une seule fois) : ${codes.join("  ")}`);
+  redirect(`${SET}#securite`);
+}
+
+export async function disableMfa(fd: FormData) {
+  const user = await requireUser(); // session aal2 obligatoire quand la 2FA est active
+  if (!user.totpFactorId) await go(SET, "La double authentification n'est pas active.");
+  if (!(await passwordOk(user.email, field(fd, "password")))) await go(SET, "Mot de passe incorrect.");
+  const { error } = await (await forRequest()).auth.mfa.unenroll({ factorId: user.totpFactorId! });
+  if (error) await go(SET, error.message);
+  await Private.clearRecoveryCodes(user.id);
+  await go(SET, "Double authentification désactivée.", "ok");
 }
 
 export async function newRecoveryCodes(fd: FormData) {
-  const user = await Auth.require();
-  await requirePassword(user, fd, SET);
-  const codes = Totp.recoveryCodes();
-  await (await Database.get())`UPDATE users SET recovery_codes = ${JSON.stringify(codes.map(Crypto.sha256))}::jsonb WHERE id = ${user.id}`;
-  await Auth.flashSecret("jr_codes", codes.join(" "));
-  go(SET, "Nouveaux codes de secours générés.", "ok");
+  const user = await requireUser();
+  if (!user.totpFactorId) await go(SET, "Active d'abord la double authentification.");
+  if (!(await passwordOk(user.email, field(fd, "password")))) await go(SET, "Mot de passe incorrect.");
+  const codes = await Private.newRecoveryCodes(user.id);
+  await go(`${SET}#securite`, `Nouveaux codes de secours (les anciens ne marchent plus) : ${codes.join("  ")}`, "ok");
 }
 
 export async function changePassword(fd: FormData) {
-  const user = await Auth.require();
-  await requirePassword(user, fd, SET);
-  const problem = Auth.passwordProblem(field(fd, "next"));
-  if (problem) go(SET, problem);
-  const q = await Database.get();
-  await q`UPDATE users SET password_hash = ${await Crypto.hashPassword(field(fd, "next"))} WHERE id = ${user.id}`;
-  await q`DELETE FROM sessions WHERE user_id = ${user.id} AND token_hash <> ${(await Auth.sessionHash()) ?? ""}`;
-  go(SET, "Mot de passe changé, tes autres sessions sont déconnectées.", "ok");
+  const user = await requireUser();
+  if (!(await passwordOk(user.email, field(fd, "password")))) await go(SET, "Mot de passe actuel incorrect.");
+  const next = field(fd, "next");
+  const problem = passwordProblem(next);
+  if (problem) await go(SET, problem);
+  const sb = await forRequest();
+  const { error } = await sb.auth.updateUser({ password: next });
+  if (error) await go(SET, error.message);
+  await sb.auth.signOut({ scope: "others" });
+  await go(SET, "Mot de passe changé, tes autres sessions sont déconnectées.", "ok");
 }
 
 export async function revokeOtherSessions() {
-  const user = await Auth.require();
-  await (await Database.get())`DELETE FROM sessions WHERE user_id = ${user.id} AND token_hash <> ${(await Auth.sessionHash()) ?? ""}`;
-  go(SET, "Autres sessions déconnectées.", "ok");
+  await requireUser();
+  await (await forRequest()).auth.signOut({ scope: "others" });
+  await go(SET, "Autres sessions déconnectées.", "ok");
 }
 
 export async function newIngestToken() {
-  const user = await Auth.require();
-  const token = Crypto.token();
-  await (await Database.get())`UPDATE users SET ingest_token_hash = ${Crypto.sha256(token)} WHERE id = ${user.id}`;
-  await Auth.flashSecret("jr_ingest", token);
-  go(SET, "Nouveau jeton généré (l'ancien ne fonctionne plus).", "ok");
+  const user = await requireUser();
+  const token = await Private.newIngestToken(user.id);
+  await go(SET, `Nouveau jeton pour le script Gmail (affiché une seule fois, l'ancien ne marche plus) : ${token}`, "ok");
 }
 
 export async function deleteAccount(fd: FormData) {
-  const user = await Auth.require();
-  if (field(fd, "confirm").trim().toLowerCase() !== user.email) go(SET, "Recopie exactement ton e-mail pour confirmer.");
-  await requirePassword(user, fd, SET);
-  await (await Database.get())`DELETE FROM users WHERE id = ${user.id}`; // cascade : sessions, réglages, offres
-  (await cookies()).delete(Auth.COOKIE);
-  go("/login", "Compte supprimé.", "ok");
+  const user = await requireUser();
+  if (field(fd, "confirm").trim().toLowerCase() !== user.email) await go(SET, "Recopie exactement ton e-mail pour confirmer.");
+  if (!(await passwordOk(user.email, field(fd, "password")))) await go(SET, "Mot de passe incorrect.");
+  const { error } = await admin().auth.admin.deleteUser(user.id); // cascade : profil, matchs, empreintes, quotas
+  if (error) await go(SET, error.message);
+  await (await forRequest()).auth.signOut({ scope: "local" });
+  await go("/login", "Compte supprimé.", "ok");
 }
 
 /* =================== Application =================== */
 
 export async function uploadCv(fd: FormData) {
-  const user = await Auth.require();
-  const repo = new SettingsRepo(user.id);
+  const user = await requireUser();
+  const repo = new Profiles(await forRequest(), user.id);
   const file = fd.get("cv");
   const pasted = field(fd, "cvText").trim();
   if (file instanceof File && file.size > 0) {
-    if (file.type !== "application/pdf") go(SET, "Le CV doit être un PDF.");
-    if (file.size > 5_000_000) go(SET, "PDF trop lourd (5 Mo max).");
-    await repo.update({ cvText: await JobAI.readCv(new Uint8Array(await file.arrayBuffer())), cvName: file.name });
+    if (file.type !== "application/pdf") await go(SET, "Le CV doit être un PDF.");
+    if (file.size > 5_000_000) await go(SET, "PDF trop lourd (5 Mo max).");
+    const text = await JobAI.readCv(new Uint8Array(await file.arrayBuffer()));
+    await repo.update({ cvText: text.slice(0, 40_000), cvName: file.name.slice(0, 200) });
   } else if (pasted) {
-    await repo.update({ cvText: pasted.slice(0, 30_000), cvName: "texte collé" });
+    await repo.update({ cvText: pasted.slice(0, 40_000), cvName: "texte collé" });
   } else {
-    go(SET, "Aucun CV fourni.");
+    await go(SET, "Aucun CV fourni.");
   }
-  go(SET, "CV enregistré.", "ok");
+  await go(SET, "CV enregistré.", "ok");
 }
 
 export async function saveSettings(fd: FormData) {
-  const user = await Auth.require();
-  const careers: CareerSite[] = field(fd, "careers").split("\n").slice(0, 30).flatMap((line) => {
+  const user = await requireUser();
+  const careers: CareerSite[] = field(fd, "careers").split("\n").slice(0, 15).flatMap((line) => {
     const [type, id, label] = line.split("|").map((x) => x.trim());
-    if (!CAREER_TYPES.includes(type as CareerType) || !id || (type === "workday" && !Text.isUrl(id))) return [];
-    return [{ type: type as CareerType, id, label: label || id }];
+    if (!CAREER_TYPES.includes(type as CareerType) || !id || id.length > 300 || (type === "workday" && !Text.isUrl(id))) return [];
+    return [{ type: type as CareerType, id, label: (label || id).slice(0, 100) }];
   });
-  const email = field(fd, "email").trim().toLowerCase();
-  await new SettingsRepo(user.id).update({
+  await new Profiles(await forRequest(), user.id).update({
     filters: {
       titleKeywords: Text.list(field(fd, "titleKeywords"), 15),
       excludeKeywords: Text.list(field(fd, "excludeKeywords"), 40),
@@ -209,28 +215,30 @@ export async function saveSettings(fd: FormData) {
       scoreThreshold: Math.max(0, Math.min(100, Number(field(fd, "scoreThreshold")) || 70)),
     },
     sources: { webSearch: fd.get("webSearch") === "on", franceTravail: fd.get("franceTravail") === "on", adzuna: fd.get("adzuna") === "on", careers },
-    notify: { enabled: fd.get("notifyEnabled") === "on", email: Text.isEmail(email) ? email : null },
+    notifyEnabled: fd.get("notifyEnabled") === "on",
   });
-  go(SET, "Réglages enregistrés.", "ok");
+  await go(SET, "Réglages enregistrés.", "ok");
 }
 
 export async function sendTestEmail() {
-  const user = await Auth.require();
-  const to = (await new SettingsRepo(user.id).get()).notify.email ?? user.email;
-  try { await Mailer.sendTest(to); } catch (e) { go(SET, String(e).slice(0, 250)); }
-  go(SET, `E-mail de test envoyé à ${to}.`, "ok");
+  const user = await requireUser();
+  if (!(await Private.claim(user.id, "testmail"))) await go(SET, "Patiente quelques minutes avant un nouvel e-mail de test.");
+  try { await Mailer.sendTest(user.email); } catch (e) { await go(SET, String(e).slice(0, 250)); }
+  await go(SET, `E-mail de test envoyé à ${user.email}.`, "ok");
 }
 
 export async function scanNow() {
-  const user = await Auth.require();
-  if (await new SettingsRepo(user.id).scannedWithin(10)) go("/", "Un scan a déjà eu lieu il y a moins de 10 minutes.");
+  const user = await requireUser();
+  const l = Private.LIMITS.scan;
+  if (!(await Private.claim(user.id, "scan"))) await go("/", `Scan manuel limité à ${l.max} par jour, un toutes les ${l.minutes} minutes.`);
   const r = await (await Scanner.forUser(user.id)).run();
-  const msg = `Scan terminé : ${r.fetched} offres collectées, ${r.inserted} nouvelles, ${r.scored} notées, ${r.sent} envoyées par e-mail.`;
-  redirect(`/?ok=${encodeURIComponent(msg)}${r.errors.length ? `&err=${encodeURIComponent(r.errors.slice(0, 4).join(" | "))}` : ""}`);
+  const msg = `Scan terminé : ${r.fetched} offres collectées, ${r.fresh} nouvelles, ${r.scored} notées, ${r.matched} au-dessus de ton seuil, ${r.sent} envoyées par e-mail.`;
+  await go("/", r.errors.length ? `${msg} Problèmes : ${r.errors.slice(0, 3).join(" | ")}` : msg, r.errors.length && !r.scored ? "err" : "ok");
 }
 
-export async function dismissJob(fd: FormData) {
-  const user = await Auth.require();
-  await new JobsRepo(user.id).dismiss(Number(fd.get("id")));
+export async function dismissMatch(fd: FormData) {
+  const user = await requireUser();
+  const id = Number(fd.get("id"));
+  if (Number.isSafeInteger(id)) await new Matches(await forRequest(), user.id).dismiss(id);
   revalidatePath("/");
 }

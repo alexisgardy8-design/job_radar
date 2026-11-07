@@ -1,29 +1,30 @@
-/** Orchestration par compte : collecte → tri → scoring IA → e-mail. */
-import { Database, JobsRepo, SettingsRepo } from "./database.ts";
-import { JobFilter, Text, type RawJob, type Settings } from "./core.ts";
+/**
+ * Orchestration par compte, entièrement en mémoire :
+ * collecte → offres jamais vues → tri gratuit → scoring IA → e-mail des meilleures.
+ * En base, on n'écrit que l'empreinte des offres notées (seen_jobs) et les 10 meilleurs matchs.
+ */
+import { JobFilter, Text, type RawJob, type Settings, type Verdict } from "./core.ts";
 import { JobSource } from "./sources.ts";
 import { JobAI } from "./ai.ts";
 import { Mailer } from "./mailer.ts";
+import { Matches, Private, Profiles, SeenJobs } from "./repos.ts";
+import { admin, check } from "./supabase.ts";
 
-export interface ScanReport { fetched: number; inserted: number; scored: number; sent: number; errors: string[] }
+export interface ScanReport { fetched: number; fresh: number; scored: number; matched: number; sent: number; errors: string[] }
 
 export class Scanner {
-  private readonly jobs: JobsRepo;
-  private readonly repo: SettingsRepo;
+  private constructor(private readonly userId: string, private readonly email: string, private readonly settings: Settings) {}
 
-  private constructor(private readonly userId: number, private readonly email: string, private readonly settings: Settings) {
-    this.jobs = new JobsRepo(userId);
-    this.repo = new SettingsRepo(userId);
+  /** Charge le compte avec le client service_role (cron, ingestion, scan manuel après authentification). */
+  static async forUser(userId: string): Promise<Scanner> {
+    const db = admin();
+    const { data, error } = await db.auth.admin.getUserById(userId);
+    if (error || !data.user?.email) throw new Error(`compte ${userId} introuvable`);
+    const row = check(await db.from("profiles").select("cv_text, cv_name, filters, sources, notify_enabled").eq("user_id", userId).maybeSingle(), "profil");
+    return new Scanner(userId, data.user.email, Profiles.toSettings(row));
   }
 
-  static async forUser(userId: number): Promise<Scanner> {
-    const q = await Database.get();
-    const user = ((await q`SELECT email FROM users WHERE id = ${userId}`) as { email: string }[])[0];
-    if (!user) throw new Error(`compte ${userId} introuvable`);
-    return new Scanner(userId, user.email, await new SettingsRepo(userId).get());
-  }
-
-  /** Scan complet. */
+  /** Scan complet à partir des sources du compte. */
   async run(): Promise<ScanReport> {
     const errors: string[] = [];
     const sources = JobSource.forSettings(this.settings);
@@ -34,52 +35,61 @@ export class Scanner {
       errors.push(`${sources[i].name} : ${String(r.reason).slice(0, 200)}`);
       return [];
     });
-    const inserted = await this.ingest(collected);
-    const rest = await this.scoreAndSend(Number(process.env.MAX_SCORED_PER_RUN ?? 40));
-    await this.repo.touchScan();
-    return { fetched: collected.length, inserted, ...rest, errors: [...errors, ...rest.errors] };
+    const report = await this.process(collected, Number(process.env.MAX_SCORED_PER_RUN ?? 40));
+    await Private.touchScan(this.userId);
+    return { ...report, errors: [...errors, ...report.errors] };
   }
 
-  /** Enregistre les nouvelles offres, pré-filtrées gratuitement. */
-  async ingest(jobs: RawJob[]): Promise<number> {
-    const filter = new JobFilter(this.settings.filters);
-    let n = 0;
-    for (const j of jobs) if (await this.jobs.insert(j, filter.reject(j))) n++;
-    return n;
-  }
-
-  /** Note les offres en attente puis envoie celles au-dessus du seuil. */
-  async scoreAndSend(limit: number): Promise<Omit<ScanReport, "fetched" | "inserted">> {
+  /** Traite une liste d'offres (scan ou alertes e-mail). */
+  async process(jobs: RawJob[], maxScored: number): Promise<ScanReport> {
     const { cvText, filters, notify } = this.settings;
-    if (!cvText) return { scored: 0, sent: 0, errors: ["aucun CV importé : rien n'est noté"] };
-    const errors: string[] = [];
-    let scored = 0;
+    const report: ScanReport = { fetched: jobs.length, fresh: 0, scored: 0, matched: 0, sent: 0, errors: [] };
+    if (!cvText) return { ...report, errors: ["aucun CV importé : rien n'est noté"] };
 
-    const pending = await this.jobs.pending(limit);
-    for (let i = 0; i < pending.length; i += 4) {
-      await Promise.all(pending.slice(i, i + 4).map(async (row) => {
+    // 1. Dédoublonnage dans le lot, puis on écarte ce qui a déjà été noté.
+    const byKey = new Map(jobs.map((j) => [SeenJobs.key(j), j]));
+    const unseen = await SeenJobs.unseen(this.userId, [...byKey.keys()]);
+    report.fresh = unseen.size;
+
+    // 2. Tri gratuit. Les offres écartées ne sont pas marquées : elles reviendront si les filtres changent.
+    // Les plus récentes d'abord ; au-delà de maxScored, les offres restent non vues et passent au scan suivant.
+    const filter = new JobFilter(filters);
+    const toScore = [...unseen].map((key) => ({ key, job: byKey.get(key)! }))
+      .filter(({ job }) => !filter.reject(job))
+      .sort((a, b) => (Date.parse(b.job.postedAt ?? "") || 0) - (Date.parse(a.job.postedAt ?? "") || 0))
+      .slice(0, maxScored);
+
+    // 3. Scoring IA, 4 en parallèle. Une offre en erreur n'est pas marquée : elle sera retentée.
+    const scored: { key: string; job: RawJob; verdict: Verdict }[] = [];
+    for (let i = 0; i < toScore.length; i += 4) {
+      await Promise.all(toScore.slice(i, i + 4).map(async (item) => {
         try {
-          const verdict = await JobAI.score({ ...row, externalId: "", contract: Text.contract(row.contract), postedAt: row.posted_at }, cvText, filters);
-          await this.jobs.setVerdict(row.id, verdict);
-          scored++;
+          scored.push({ ...item, verdict: await JobAI.score(item.job, cvText, filters) });
         } catch (e) {
-          errors.push(`scoring : ${String(e).slice(0, 150)}`);
-          await this.jobs.setError(row.id, String(e));
+          report.errors.push(`scoring : ${String(e).slice(0, 150)}`);
         }
       }));
     }
+    report.scored = scored.length;
+    await SeenJobs.mark(this.userId, scored.map((s) => s.key));
 
-    let sent = 0;
-    const toSend = notify.enabled ? await this.jobs.unsent(filters.scoreThreshold) : [];
-    if (toSend.length) {
+    // 4. Les meilleures : e-mail puis conservation des 10 meilleures du compte.
+    const good = scored.filter((s) => s.verdict.score >= filters.scoreThreshold).sort((a, b) => b.verdict.score - a.verdict.score).slice(0, Matches.KEEP);
+    report.matched = good.length;
+    let sentAt: string | null = null;
+    if (good.length && notify.enabled) {
       try {
-        await Mailer.sendJobs(notify.email ?? this.email, toSend);
-        await this.jobs.markSent(toSend.map((j) => j.id));
-        sent = toSend.length;
+        await Mailer.sendJobs(this.email, good.map(({ job, verdict }) => ({
+          title: job.title, company: job.company, location: job.location, contract: job.contract ?? verdict.contractDetected,
+          url: Text.isUrl(job.url) ? job.url : "#", score: verdict.score, verdict,
+        })));
+        sentAt = new Date().toISOString();
+        report.sent = good.length;
       } catch (e) {
-        errors.push(`e-mail : ${String(e).slice(0, 150)}`);
+        report.errors.push(`e-mail : ${String(e).slice(0, 150)}`);
       }
     }
-    return { scored, sent, errors };
+    await Matches.save(this.userId, good, sentAt);
+    return report;
   }
 }

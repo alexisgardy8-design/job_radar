@@ -8,7 +8,7 @@
  *  2. Va sur https://script.google.com → Nouveau projet → colle ce fichier.
  *  3. Paramètres du projet → Propriétés du script : ajoute
  *       JOB_RADAR_URL   = https://ton-projet.vercel.app/api/ingest/email
- *       INGEST_SECRET   = (la même valeur que sur Vercel)
+ *       INGEST_SECRET   = ton jeton personnel (Job Radar → Réglages → « Générer un jeton »)
  *  4. Exécute une fois `forwardJobAlerts` (Google te demande l'autorisation), puis
  *     Déclencheurs → Ajouter → forwardJobAlerts, basé sur le temps, toutes les heures.
  */
@@ -33,7 +33,10 @@ function forwardJobAlerts() {
         payload: JSON.stringify({ from: msg.getFrom(), subject: msg.getSubject(), body: htmlWithLinks(msg.getBody()) }),
         muteHttpExceptions: true,
       });
-      if (res.getResponseCode() >= 300) throw new Error("Job Radar a répondu " + res.getResponseCode() + " : " + res.getContentText());
+      const status = res.getResponseCode();
+      if (status === 401) throw new Error("Jeton refusé : génère-en un nouveau dans Job Radar → Réglages");
+      // Quota atteint ou erreur : on n'insiste pas, le fil est marqué traité pour ne pas le renvoyer toutes les heures.
+      if (status >= 300) console.warn("Job Radar a répondu " + status + " : " + res.getContentText().slice(0, 200));
     });
     thread.addLabel(done);
   });

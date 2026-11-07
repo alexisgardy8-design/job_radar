@@ -56,7 +56,7 @@ export class WebSearchSource extends JobSource {
     const contract = contractTypes.includes("CDI") ? "CDI" : contractTypes[0] ?? "";
     const qs = titleKeywords.map((k) => `offre emploi ${contract} "${k}" ${where}`);
     if (contractTypes.includes("CDI")) qs.push(`graduate programme CDI ${where} 2027`);
-    return qs.slice(0, Number(process.env.MAX_SEARCHES_PER_RUN ?? 8));
+    return qs.slice(0, Number(process.env.MAX_SEARCHES_PER_RUN ?? 4));
   }
 
   async fetch(): Promise<RawJob[]> {
