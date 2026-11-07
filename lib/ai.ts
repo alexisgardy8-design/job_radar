@@ -51,7 +51,7 @@ export class JobAI {
 
   private static get model(): LanguageModel {
     return JobAI.provider === "gemini"
-      ? google(process.env.GEMINI_MODEL || "gemini-2.5-flash")
+      ? google(process.env.GEMINI_MODEL || "gemini-3.8-flash")
       : process.env.SCORING_MODEL || "anthropic/claude-haiku-5.5";
   }
 
